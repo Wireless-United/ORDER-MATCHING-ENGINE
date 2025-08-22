@@ -1,14 +1,20 @@
-mod engine;
-mod utils;
+// main.rs
+mod order;
+mod shard;
+mod affinity;
 
-use crossbeam::queue::SegQueue;
-use std::sync::Arc;
+use order::{Order, Side};
+use shard::Shard;
+use std::thread;
 
 fn main() {
-    let queue = Arc::new(SegQueue::new());
+    let mut shard0 = Shard::new(0, "AAPL");
+    shard0.add_order(Order::new(1, "AAPL", Side::Buy, 150.0, 100));
+    shard0.add_order(Order::new(2, "AAPL", Side::Sell, 151.0, 50));
 
-    // Example: spawn a shard for AAPL
-    engine::shard::start_shard("AAPL".to_string(), queue.clone());
-
-    // Later: more shards (TSLA, GOOG, etc.)
+    thread::spawn(move || {
+        affinity::pin_to_core(0);
+        let mut s = shard0;
+        s.process();
+    }).join().unwrap();
 }
