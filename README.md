@@ -9,6 +9,9 @@ The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fa
 
 ![Architecture Diagram](250822_00h36m04s_screenshot.png)  
 
+![Architecture Diagram](250827_10h43m41s_screenshot.png)  
+
+
 
 ---
 
@@ -64,6 +67,10 @@ The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fa
 - **Benefit**: Drastically reduces packet processing latency — critical for order ingestion.
 
 ---
+![Architecture Diagram](250827_10h44m51s_screenshot.png)  
+![Architecture Diagram](250827_10h45m47s_screenshot.png)
+
+
 
 ### 6. Remote Direct Memory Access (RDMA)
 - **What**: Allows one machine to **read/write another’s memory directly** over the network, without CPU/OS involvement.  
