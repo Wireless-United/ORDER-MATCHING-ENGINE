@@ -7,7 +7,7 @@ The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fa
 
 ## 📌 System Architecture
 
-![Architecture Diagram](250822_00h36m04s_screenshot.png)  
+![Architecture Diagram](updated_workflow.png)  
 
 
 ---
@@ -32,6 +32,9 @@ The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fa
   - Each shard runs in a **single dedicated thread** → no race conditions inside the shard.  
   - Boosts parallelism (multiple symbols processed in parallel).  
 - **Note**: Lock-free queues may still be needed for **cross-shard communication** (e.g., feeding from a central gateway into shards).
+
+  ![Architecture Diagram](sharded_core.png)  
+
 
 ---
 
@@ -62,6 +65,10 @@ The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fa
 - **What**: DPDK = Data Plane Development Kit.  
 - **Why**: Skips the Linux kernel’s networking stack and lets user-space programs talk directly to the **network card (NIC)**.  
 - **Benefit**: Drastically reduces packet processing latency — critical for order ingestion.
+
+  ![Architecture Diagram](dpdk.png)  
+  ![Architecture Diagram](kernel_bypass.png)  
+
 
 ---
 
