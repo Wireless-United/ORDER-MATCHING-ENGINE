@@ -25,7 +25,11 @@ impl Fabric {
     }
 
     pub fn run_ingress_worker(&self, worker_id: usize) {
-        info!("Ingress worker {} started", worker_id);
+        info!(
+            "Ingress worker {} started on thread '{}'", 
+            worker_id,
+            std::thread::current().name().unwrap_or("unnamed")
+        );
 
         loop {
             match self.ingress_receiver.recv() {

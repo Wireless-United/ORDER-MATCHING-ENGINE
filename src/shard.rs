@@ -29,7 +29,11 @@ impl Shard {
     }
 
     pub fn run(&mut self) {
-        info!("Shard for symbol '{}' started", self.symbol);
+        info!(
+            "Shard for symbol '{}' started on thread '{}'", 
+            self.symbol, 
+            std::thread::current().name().unwrap_or("unnamed")
+        );
 
         loop {
             // Wait for wake-up signal
