@@ -83,6 +83,7 @@ impl Shard {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_stats(&self) -> (usize, usize) {
         (self.buy_orderbook.len(), self.sell_orderbook.len())
     }

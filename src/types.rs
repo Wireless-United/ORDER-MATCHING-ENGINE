@@ -33,9 +33,9 @@ impl Event {
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct Order {
     pub price: u64,
+    #[allow(dead_code)]
     pub qty: u64,
     pub side: Side,
 }
