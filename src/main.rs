@@ -24,45 +24,37 @@ const SYMBOLS: &[&str] = &["Pranesh", "Superman", "Arnimzola"];
 fn check_cpu_requirements() -> Result<Vec<core_affinity::CoreId>, String> {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let num_cores = core_ids.len();
-    let required_cores = SYMBOLS.len() + NUM_INGRESS_WORKERS;
+    let required_cores = SYMBOLS.len(); // Only check for shard cores
 
     info!("System has {} CPU cores available", num_cores);
-    info!("Required cores: {} symbols + {} ingress workers = {}", 
-          SYMBOLS.len(), NUM_INGRESS_WORKERS, required_cores);
+    info!("Required cores: {} symbols (shards only)", SYMBOLS.len());
 
     if num_cores < required_cores {
         return Err(format!(
-            "Insufficient CPU cores! Available: {}, Required: {} (symbols: {}, ingress: {})",
-            num_cores, required_cores, SYMBOLS.len(), NUM_INGRESS_WORKERS
+            "Insufficient CPU cores! Available: {}, Required: {} (shards only)",
+            num_cores, required_cores
         ));
     }
 
     Ok(core_ids)
 }
 
-fn allocate_cores(core_ids: &[core_affinity::CoreId]) -> (HashMap<String, core_affinity::CoreId>, Vec<core_affinity::CoreId>) {
+fn allocate_shard_cores(core_ids: &[core_affinity::CoreId]) -> HashMap<String, core_affinity::CoreId> {
     let mut shard_cores = HashMap::new();
-    let mut ingress_cores = Vec::new();
 
-    // Allocate first N cores to shards
+    // Allocate first N cores to shards only
     for (i, &symbol) in SYMBOLS.iter().enumerate() {
         shard_cores.insert(symbol.to_string(), core_ids[i]);
-    }
-
-    // Allocate remaining cores to ingress workers
-    for i in SYMBOLS.len()..SYMBOLS.len() + NUM_INGRESS_WORKERS {
-        ingress_cores.push(core_ids[i]);
     }
 
     info!("Core allocation:");
     for (symbol, core_id) in &shard_cores {
         info!("  Shard '{}' -> Core {:?}", symbol, core_id);
     }
-    for (i, core_id) in ingress_cores.iter().enumerate() {
-        info!("  Ingress worker {} -> Core {:?}", i, core_id);
-    }
+    info!("Ingress workers: NOT PINNED (using remaining cores freely)");
+    info!("HTTP threads: NOT PINNED (using remaining cores freely)");
 
-    (shard_cores, ingress_cores)
+    shard_cores
 }
 
 fn get_current_core_id() -> Option<usize> {
@@ -83,7 +75,7 @@ async fn main() {
 
     info!("Starting Matching Engine Service");
 
-    // Check CPU core requirements
+    // Check CPU core requirements (only for shards)
     let core_ids = match check_cpu_requirements() {
         Ok(cores) => cores,
         Err(err) => {
@@ -92,8 +84,8 @@ async fn main() {
         }
     };
 
-    // Allocate cores to shards and ingress workers
-    let (shard_cores, ingress_cores) = allocate_cores(&core_ids);
+    // Allocate cores only to shards
+    let shard_cores = allocate_shard_cores(&core_ids);
 
     // Create the ingress channel for routing orders
     let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
@@ -150,25 +142,15 @@ async fn main() {
     // Create fabric for routing
     let fabric = Arc::new(Fabric::new(ingress_receiver, shard_queues, shard_wakeups));
 
-    // Spawn ingress worker threads with optional core pinning
+    // Spawn ingress worker threads WITHOUT core pinning
     let mut ingress_handles = Vec::new();
     for worker_id in 0..NUM_INGRESS_WORKERS {
         let fabric_clone = fabric.clone();
-        let assigned_core = ingress_cores.get(worker_id).copied();
         
         let handle = thread::Builder::new()
             .name(format!("ingress-{}", worker_id))
             .spawn(move || {
-                // Pin to assigned core if available
-                if let Some(core) = assigned_core {
-                    if !core_affinity::set_for_current(core) {
-                        error!("Failed to pin ingress worker {} to core {:?}", worker_id, core);
-                    } else {
-                        info!("Ingress worker {} pinned to core {:?}", worker_id, core);
-                    }
-                } else {
-                    info!("Ingress worker {} running without specific core pinning", worker_id);
-                }
+                info!("Ingress worker {} started (not pinned to specific core)", worker_id);
 
                 // Run the ingress worker
                 fabric_clone.run_ingress_worker(worker_id);
