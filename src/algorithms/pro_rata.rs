@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use crate::engine::{Order, Side};
+use crate::engine::{Order, Side, Request, OrderBookRef};
 use crate::algorithms::fifo::Trade;
 
 pub struct ProRataMatcher {
@@ -186,35 +186,43 @@ impl ProRataMatcher {
         trades
     }
 
+    #[allow(dead_code)]
     pub fn best_bid(&self) -> Option<&Order> {
         self.bids.front()
     }
 
+    #[allow(dead_code)]
     pub fn best_ask(&self) -> Option<&Order> {
         self.asks.front()
     }
 
+    #[allow(dead_code)]
     pub fn bid_depth(&self) -> usize {
         self.bids.len()
     }
 
+    #[allow(dead_code)]
     pub fn ask_depth(&self) -> usize {
         self.asks.len()
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.bids.clear();
         self.asks.clear();
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.bids.is_empty() && self.asks.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn bids_iter(&self) -> impl Iterator<Item = &Order> {
         self.bids.iter()
     }
 
+    #[allow(dead_code)]
     pub fn asks_iter(&self) -> impl Iterator<Item = &Order> {
         self.asks.iter()
     }
@@ -224,4 +232,31 @@ impl Default for ProRataMatcher {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Process a request using Pro-Rata matching algorithm.
+///
+/// This is the concurrent-safe entry point for Pro-Rata matching.
+/// It uses the order book reference for validation only (read-only access).
+///
+/// # Arguments
+///
+/// * `request` - The request containing the order to process
+/// * `order_book` - Read-only reference to the order book for validation
+///
+/// # Returns
+///
+/// A vector of executed trades
+pub fn process(request: Request, _order_book: &OrderBookRef) -> Vec<Trade> {
+    // Create a new matcher instance for this request
+    let mut matcher = ProRataMatcher::new();
+    
+    // Validate using order book reference (read-only)
+    if !_order_book.validate_order(request.order.id, request.order.price, request.order.quantity) {
+        eprintln!("Order validation failed for request {}", request.id);
+        return Vec::new();
+    }
+    
+    // Process the order
+    matcher.match_order(request.order)
 }

@@ -1,6 +1,13 @@
 [package]
 name = "ORDER-MATCHING-ENGINE"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros", "sync", "time"] }
+crossbeam = "0.8"
+concurrent-queue = "2.4"
+rayon = "1.8"
+chrono = "0.4"
+thiserror = "2.0"
+num_cpus = "1.16"

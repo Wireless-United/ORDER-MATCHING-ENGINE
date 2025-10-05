@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::{DateTime, Utc};
-use crate::engine::{Order, Side};
+use crate::engine::{Order, Side, Request, OrderBookRef};
 use crate::algorithms::errors::AlgorithmError;
 
 static GLOBAL_TRADE_RANK: AtomicU64 = AtomicU64::new(1);
@@ -156,43 +156,53 @@ impl FifoMatcher {
         self.asks.push_back(order);
     }
 
+    #[allow(dead_code)]
     pub fn best_bid(&self) -> Option<&Order> {
         self.bids.front()
     }
 
+    #[allow(dead_code)]
     pub fn best_ask(&self) -> Option<&Order> {
         self.asks.front()
     }
 
+    #[allow(dead_code)]
     pub fn bid_depth(&self) -> usize {
         self.bids.len()
     }
 
+    #[allow(dead_code)]
     pub fn ask_depth(&self) -> usize {
         self.asks.len()
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.bids.clear();
         self.asks.clear();
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.bids.is_empty() && self.asks.is_empty()
     }
 
+    #[allow(dead_code)]
     pub fn bids_iter(&self) -> impl Iterator<Item = &Order> {
         self.bids.iter()
     }
 
+    #[allow(dead_code)]
     pub fn asks_iter(&self) -> impl Iterator<Item = &Order> {
         self.asks.iter()
     }
 
+    #[allow(dead_code)]
     pub fn get_trade_count() -> u64 {
         GLOBAL_TRADE_RANK.load(Ordering::SeqCst) - 1
     }
 
+    #[allow(dead_code)]
     pub fn reset_trade_rank() {
         GLOBAL_TRADE_RANK.store(1, Ordering::SeqCst);
     }
@@ -201,5 +211,38 @@ impl FifoMatcher {
 impl Default for FifoMatcher {
     fn default() -> Self {
         Self::new()
+    }
+}
+/// Process a request using FIFO matching algorithm.
+///
+/// This is the concurrent-safe entry point for FIFO matching.
+/// It uses the order book reference for validation only (read-only access).
+///
+/// # Arguments
+///
+/// * `request` - The request containing the order to process
+/// * `order_book` - Read-only reference to the order book for validation
+///
+/// # Returns
+///
+/// A vector of executed trades
+pub fn process(request: Request, _order_book: &OrderBookRef) -> Vec<Trade> {
+    // Create a new matcher instance for this request
+    // In a real implementation, this would be a per-shard matcher
+    let mut matcher = FifoMatcher::new();
+    
+    // Validate using order book reference (read-only)
+    if !_order_book.validate_order(request.order.id, request.order.price, request.order.quantity) {
+        eprintln!("Order validation failed for request {}", request.id);
+        return Vec::new();
+    }
+    
+    // Process the order
+    match matcher.match_order(request.order) {
+        Ok(trades) => trades,
+        Err(e) => {
+            eprintln!("FIFO matching error for request {}: {:?}", request.id, e);
+            Vec::new()
+        }
     }
 }

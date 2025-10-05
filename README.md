@@ -1,53 +1,54 @@
-# 🚀 High-Performance Matching Engine (Rust + HPC)
+# High-Performance Order Matching Engine
 
-This project implements an **open-source stock exchange matching engine** in **Rust**, designed with **High Performance Computing (HPC)** concepts.  
-The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fault-tolerance** — similar to real-world exchanges like **NASDAQ**.
+A concurrent and parallel order matching system implemented in Rust using lock-free data structures and modern async/parallel computation patterns.
 
----
+## Architecture
 
-## 📌 System Architecture
+```
+Ingress Tasks (Tokio) → Lock-Free Queue → Shard Workers (Tokio) → Parallel Processing (Rayon)
+```
 
-![Architecture Diagram](250822_00h36m04s_screenshot.png)  
+## Key Features
 
+- **Lock-Free Communication**: Uses `ConcurrentQueue` for all inter-task communication - no mutexes
+- **Async Orchestration**: Tokio runtime for async ingress and task coordination
+- **Parallel Compute**: Rayon for CPU-bound matching algorithm execution
+- **Shard-Based Processing**: Distributes orders across multiple workers for scalability
+- **Multiple Algorithms**: FIFO, Pro-Rata, and Hybrid matching strategies
 
----
+## Building
 
-## ⚡ Core Design Principles
+```bash
+cargo build --release
+```
 
-### 1. Lock-Free Data Structures
-- **What**: Data structures (queues, stacks, order books) that avoid traditional `locks` (like mutexes).
-- **Why**: Locks cause contention and slowdowns under high-frequency trading loads.
-- **How it helps**:  
-  - In **shared memory systems**, threads normally need locking → performance drops.  
-  - With **lock-free queues**, threads can push/pop concurrently using atomic operations.  
+## Running
 
----
+```bash
+cargo run --release
+```
 
-### 2. Sharding the Order Book
-- **What**: Splitting the order book by symbol or group of symbols.  
-  Example:  
-  - Shard 1 → AAPL (Apple) orders  
-  - Shard 2 → TSLA (Tesla) orders
-- **Why**:  
-  - Each shard runs in a **single dedicated thread** → no race conditions inside the shard.  
-  - Boosts parallelism (multiple symbols processed in parallel).  
-- **Note**: Lock-free queues may still be needed for **cross-shard communication** (e.g., feeding from a central gateway into shards).
+## Testing
 
----
+```bash
+cargo test
+```
 
-### 3. Thread Pinning (CPU Affinity)
-- **What**: Binding a specific thread permanently to a specific CPU core.
-- **Why**: Prevents thread migration by the OS scheduler, ensuring **consistent cache locality** and predictable performance.
-- **Example**:  
-  - AAPL shard thread → pinned to **Core 0**  
-  - TSLA shard thread → pinned to **Core 1**
+## Project Structure
 
----
+```
+src/
+  algorithms/     - Matching algorithms (FIFO, Pro-Rata, Hybrid)
+  engine/         - Core engine components (Order, Request, Shard, Ingress)
+  utils/          - Utility functions
+```
 
-### 4. NUMA Awareness
-- **What**: NUMA = **Non-Uniform Memory Access**. In multi-socket systems, each CPU socket has its own local RAM.  
-- **Why it matters**:  
-  - Accessing **local RAM** → fast  
+## Configuration
+
+Edit `main.rs` to configure:
+- `NUM_SHARDS`: Number of parallel workers (default: 4)
+- `NUM_INGRESS_TASKS`: Number of ingress tasks (default: 2)
+- `ORDERS_PER_INGRESS`: Orders generated per task (default: 50)
   - Accessing **remote RAM** across sockets → slower  
 - **Solution**:  
   - Pin threads to a socket  
