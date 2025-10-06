@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub struct OrderBookRef {
     // In a real implementation, this would hold Arc references to
     // the actual AskBook and BidBook structures
+    #[allow(dead_code)]
     _phantom: (),
 }
 

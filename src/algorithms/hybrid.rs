@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use crate::engine::{Order, Side, Request, OrderBookRef};
 use crate::algorithms::fifo::Trade;
 
+#[allow(dead_code)]
 pub struct HybridConfig {
     pub fifo_percentage: f64,
 }
@@ -14,6 +15,7 @@ impl Default for HybridConfig {
     }
 }
 
+#[allow(dead_code)]
 pub struct HybridMatcher {
     pub bids: VecDeque<Order>,
     pub asks: VecDeque<Order>,
@@ -343,6 +345,7 @@ impl HybridMatcher {
     }
 }
 
+#[allow(dead_code)]
 impl Default for HybridMatcher {
     fn default() -> Self {
         Self::new()

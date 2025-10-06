@@ -4,7 +4,9 @@ use concurrent_queue::ConcurrentQueue;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+#[allow(dead_code)]
 const BATCH_SIZE: usize = 100; // Max requests to batch per cycle
+#[allow(dead_code)]
 const POLL_INTERVAL_MS: u64 = 1; // Milliseconds between queue polls
 
 /// Worker that processes orders for a specific shard

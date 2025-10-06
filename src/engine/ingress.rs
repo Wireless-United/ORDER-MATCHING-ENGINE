@@ -4,8 +4,10 @@ use concurrent_queue::ConcurrentQueue;
 use tokio::sync::Notify;
 use crate::engine::{Request, RequestType, Order, Side};
 
+#[allow(dead_code)]
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[allow(dead_code)]
 pub struct IngressHandler {
     queue: Arc<ConcurrentQueue<Request>>,
     num_shards: usize,

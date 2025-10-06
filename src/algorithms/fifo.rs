@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use crate::engine::{Order, Side, Request, OrderBookRef};
 use crate::algorithms::errors::AlgorithmError;
 
+#[allow(dead_code)]
 static GLOBAL_TRADE_RANK: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq)]
@@ -208,11 +209,13 @@ impl FifoMatcher {
     }
 }
 
+#[allow(dead_code)]
 impl Default for FifoMatcher {
     fn default() -> Self {
         Self::new()
     }
 }
+
 /// Process a request using FIFO matching algorithm.
 ///
 /// This is the concurrent-safe entry point for FIFO matching.

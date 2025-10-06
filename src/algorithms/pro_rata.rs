@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use crate::engine::{Order, Side, Request, OrderBookRef};
 use crate::algorithms::fifo::Trade;
 
+#[allow(dead_code)]
 pub struct ProRataMatcher {
     pub bids: VecDeque<Order>,
     pub asks: VecDeque<Order>,
@@ -228,6 +229,7 @@ impl ProRataMatcher {
     }
 }
 
+#[allow(dead_code)]
 impl Default for ProRataMatcher {
     fn default() -> Self {
         Self::new()

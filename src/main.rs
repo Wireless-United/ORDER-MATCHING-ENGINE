@@ -13,9 +13,13 @@ use engine::{create_shared_orderbook, shard::spawn_shard_workers, ingress::spawn
 
 #[tokio::main]
 async fn main() {
+    #[allow(dead_code)]
     const NUM_SHARDS: usize = 4;
+    #[allow(dead_code)]
     const NUM_INGRESS_TASKS: usize = 2;
+    #[allow(dead_code)]
     const ORDERS_PER_INGRESS: u64 = 50;
+    #[allow(dead_code)]
     const ORDER_INTERVAL_MS: u64 = 20;
     
     println!("Order Matching Engine: {} shards, {} tasks, {} orders", 
@@ -47,6 +51,7 @@ mod tests {
     use algorithms::fifo;
     
     #[test]
+    #[allow(unused_variables)]
     fn test_basic_integration() {
         let order_book = OrderBookRef::new();
         let order = Order::new(1, Side::Buy, 100.0, 50);
@@ -58,6 +63,7 @@ mod tests {
     }
     
     #[tokio::test]
+    #[allow(unused_variables)]
     async fn test_concurrent_queue() {
         let queue = Arc::new(ConcurrentQueue::unbounded());
         let order = Order::new(1, Side::Buy, 100.0, 50);
