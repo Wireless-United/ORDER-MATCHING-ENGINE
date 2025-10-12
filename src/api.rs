@@ -126,6 +126,7 @@ impl AppState {
             "Pranesh".to_string(),
             "Superman".to_string(),
             "Arnimzola".to_string(),
+            "Kathir".to_string(),
         ]
     }
 

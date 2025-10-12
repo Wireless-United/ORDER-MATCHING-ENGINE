@@ -32,9 +32,9 @@ const QUEUE_CAPACITY: usize = 1000;
 const NUM_INGRESS_WORKERS: usize = 5;
 const NUM_EGRESS_WORKERS: usize = 3;
 
-fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreId>, String> {
+fn check_cpu_requirements(symbols: &[String]) -> Result<(usize, Vec<core_affinity::CoreId>), String> {
+    let num_cores = num_cpus::get();
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let num_cores = core_ids.len();
     let required_cores = symbols.len(); // Only check for shard cores
 
     info!("System has {} CPU cores available", num_cores);
@@ -47,7 +47,7 @@ fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreI
         ));
     }
 
-    Ok(core_ids)
+    Ok((num_cores, core_ids))
 }
 
 fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) -> HashMap<String, core_affinity::CoreId> {
@@ -79,8 +79,7 @@ fn get_current_core_id() -> Option<usize> {
         })
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
@@ -91,8 +90,8 @@ async fn main() {
     info!("Using symbols: {:?}", symbols);
 
     // Check CPU core requirements (only for shards)
-    let core_ids = match check_cpu_requirements(&symbols) {
-        Ok(cores) => cores,
+    let (total_cores, core_ids) = match check_cpu_requirements(&symbols) {
+        Ok(result) => result,
         Err(err) => {
             error!("{}", err);
             std::process::exit(1);
@@ -101,6 +100,11 @@ async fn main() {
 
     // Allocate cores only to shards
     let shard_cores = allocate_shard_cores(&core_ids, &symbols);
+
+    // Calculate cores available for Tokio runtime
+    let tokio_worker_threads = total_cores.saturating_sub(symbols.len()).max(1);
+    info!("Configuring Tokio runtime with {} worker threads (total: {}, pinned: {})", 
+          tokio_worker_threads, total_cores, symbols.len());
 
     // Create the ingress channel for routing orders
     let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
@@ -208,9 +212,10 @@ async fn main() {
     info!("  - {} ingress workers (not pinned)", NUM_INGRESS_WORKERS);
     info!("  - {} egress workers (not pinned)", NUM_EGRESS_WORKERS);
 
-    if let Err(e) = axum::serve(listener, app).await {
-        error!("Server error: {}", e);
-    }
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("Server error: {}", e);
+        }
+    });
 
     // Wait for all threads to complete (this won't happen in normal operation)
     for handle in shard_handles {
