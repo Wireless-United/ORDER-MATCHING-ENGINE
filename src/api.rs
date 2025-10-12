@@ -1,4 +1,4 @@
-use crate::types::{Event, OrderIn, Side};
+use crate::types::{Event, OrderIn, Side, Trade};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -7,15 +7,17 @@ use axum::{
     Router,
 };
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error};
+use std::thread;
+use tracing::{debug, error, info};
 
 #[derive(Clone)]
 pub struct AppState {
     pub ingress_sender: Sender<Event>,
+    pub egress_receiver: Arc<Mutex<Option<Receiver<Trade>>>>,
     pub valid_symbols: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -132,7 +134,15 @@ impl AppState {
         
         Self {
             ingress_sender,
+            egress_receiver: Arc::new(Mutex::new(None)),
             valid_symbols: Arc::new(Mutex::new(initial_symbols)),
+        }
+    }
+
+    pub fn set_egress_receiver(&self, receiver: Receiver<Trade>) {
+        if let Ok(mut egress) = self.egress_receiver.lock() {
+            *egress = Some(receiver);
+            info!("Egress receiver configured in AppState");
         }
     }
 }
@@ -175,4 +185,99 @@ async fn create_symbol(state: AppState, body: Value) -> Result<Json<Value>, Stat
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
+}
+
+// ================================================================================================
+// EGRESS THREAD IMPLEMENTATION
+// ================================================================================================
+//
+// The egress thread system provides a mechanism to process trade outputs from the matching engine.
+// This is the reverse flow of the ingress system:
+//
+// INGRESS FLOW:  HTTP API → Ingress Channel → Fabric → Shard Queues → Shards
+// EGRESS FLOW:   Shards → Egress Channel → Egress Workers → External Systems
+//
+// USAGE IN MAIN.RS:
+// 
+// 1. Create egress channel:
+//    let (egress_sender, egress_receiver) = unbounded::<Trade>();
+//
+// 2. Pass egress_sender to each shard so they can publish trades
+//
+// 3. Configure AppState with egress receiver:
+//    let app_state = AppState::new(ingress_sender);
+//    app_state.set_egress_receiver(egress_receiver.clone());
+//
+// 4. Spawn egress workers:
+//    let egress_handles = spawn_egress_workers(egress_receiver, 3); // 3 workers
+//
+// 5. Egress workers will automatically process all trades and can:
+//    - Publish to message queues (Kafka, RabbitMQ, Redis)
+//    - Store in databases (PostgreSQL, MongoDB)
+//    - Send via WebSocket to connected clients
+//    - Update real-time analytics/metrics
+//    - Trigger notifications or alerts
+//
+// ================================================================================================
+
+/// Spawn egress worker threads to process trade outputs
+pub fn spawn_egress_workers(egress_receiver: Receiver<Trade>, num_workers: usize) -> Vec<thread::JoinHandle<()>> {
+    let mut handles = Vec::new();
+
+    for worker_id in 0..num_workers {
+        let receiver_clone = egress_receiver.clone();
+        
+        let handle = thread::Builder::new()
+            .name(format!("egress-{}", worker_id))
+            .spawn(move || {
+                info!("Egress worker {} started (not pinned to specific core)", worker_id);
+                run_egress_worker(receiver_clone, worker_id);
+            })
+            .expect("Failed to create egress worker thread");
+        
+        handles.push(handle);
+    }
+
+    info!("Spawned {} egress worker threads", num_workers);
+    handles
+}
+
+/// Main egress worker loop - processes trades from shards
+fn run_egress_worker(receiver: Receiver<Trade>, worker_id: usize) {
+    info!(
+        "Egress worker {} started on thread '{}'",
+        worker_id,
+        std::thread::current().name().unwrap_or("unnamed")
+    );
+
+    loop {
+        match receiver.recv() {
+            Ok(trade) => {
+                debug!("Egress worker {} received trade: {:?}", worker_id, trade);
+                process_trade_output(trade, worker_id);
+            }
+            Err(_) => {
+                debug!("Egress channel closed for worker {}", worker_id);
+                break;
+            }
+        }
+    }
+
+    info!("Egress worker {} shutting down", worker_id);
+}
+
+/// Process individual trade - can be extended for publishing to external systems
+fn process_trade_output(trade: Trade, worker_id: usize) {
+    info!(
+        "Egress worker {} processing trade {}: Buy {} & Sell {} matched {} @ {} at {}",
+        worker_id,
+        trade.trade_id,
+        trade.buy_order_id,
+        trade.sell_order_id,
+        trade.qty,
+        trade.price,
+        trade.timestamp.to_rfc3339()
+    );
+    
+    debug!("Trade {} successfully processed by egress worker {}", trade.trade_id, worker_id);
 }
