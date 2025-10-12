@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::{DateTime, Utc};
-use crate::engine::{Order, Side, Request, OrderBookRef};
+use crate::types::{EngineOrder as Order, EngineSide as Side, Request, OrderBookRef};
 use crate::algorithms::errors::AlgorithmError;
 
 #[allow(dead_code)]

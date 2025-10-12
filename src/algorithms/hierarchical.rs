@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
-use crate::engine::{Order, Side, Request, OrderBookRef};
+#[allow(unused_imports)]
+use crate::types::{EngineOrder as Order, EngineSide as Side, Request, OrderBookRef};
 use crate::algorithms::fifo::{Trade, FifoMatcher};
 use crate::algorithms::pro_rata::ProRataMatcher;
 use crate::algorithms::hybrid::{HybridMatcher, HybridConfig};
@@ -253,7 +253,6 @@ pub fn process(request: Request, _order_book: &OrderBookRef) -> Vec<Trade> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Side;
     use chrono::Utc;
 
     #[test]

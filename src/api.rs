@@ -1,4 +1,4 @@
-use crate::types::{Event, OrderIn, Side, MatchingAlgorithm};
+use crate::types::{Event, OrderIn, Side};
 use axum::{
     extract::State,
     http::StatusCode,

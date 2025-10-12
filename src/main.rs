@@ -1,9 +1,14 @@
+// Suppress warnings for dead code and unused variables/imports
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+#![allow(non_snake_case)]
+
 mod api;
 mod fabric;
 mod shard;
 mod types;
 mod algorithms;
-mod engine;
 
 mod utils {
     pub mod affinity;

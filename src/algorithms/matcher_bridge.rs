@@ -2,16 +2,15 @@
 //! 
 //! This module converts between:
 //! - `crate::types::Order` (uses u64 price) - Used in shard.rs
-//! - `crate::engine::Order` (uses f64 price) - Used in algorithms
+//! - `crate::types::EngineOrder` (uses f64 price) - Used in algorithms
 //! 
 //! And provides unified interfaces for all matching algorithms.
 
-use crate::types::{Order as ShardOrder, Trade as ShardTrade, Side as ShardSide, Event};
-use crate::engine::{Order as EngineOrder, Side as EngineSide};
+use crate::types::{Order as ShardOrder, Trade as ShardTrade, Side as ShardSide};
+use crate::types::{EngineOrder, EngineSide};
 use crate::algorithms::fifo::{FifoMatcher, Trade as AlgoTrade};
 use crate::algorithms::pro_rata::ProRataMatcher;
 use crate::algorithms::hybrid::{HybridMatcher, HybridConfig};
-use std::collections::VecDeque;
 
 const PRICE_SCALE: f64 = 100.0; // Convert u64 to f64 price (e.g., 100 -> 1.00)
 
