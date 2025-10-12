@@ -3,7 +3,7 @@
 
 # Configuration
 BASE_URL="http://localhost:3000"
-SYMBOLS=("Pranesh" "Superman" "Arnimzola")
+SYMBOLS=("Pranesh" "Superman" "Arnimzola","Kathir")
 DEFAULT_REQUESTS=1000
 DEFAULT_CONCURRENCY=50
 DEFAULT_DELAY=0.001

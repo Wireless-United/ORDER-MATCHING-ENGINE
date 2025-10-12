@@ -20,9 +20,9 @@ use tracing_subscriber;
 const QUEUE_CAPACITY: usize = 1000;
 const NUM_INGRESS_WORKERS: usize = 5;
 
-fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreId>, String> {
+fn check_cpu_requirements(symbols: &[String]) -> Result<(usize, Vec<core_affinity::CoreId>), String> {
+    let num_cores = num_cpus::get();
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let num_cores = core_ids.len();
     let required_cores = symbols.len(); // Only check for shard cores
 
     info!("System has {} CPU cores available", num_cores);
@@ -35,7 +35,7 @@ fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreI
         ));
     }
 
-    Ok(core_ids)
+    Ok((num_cores, core_ids))
 }
 
 fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) -> HashMap<String, core_affinity::CoreId> {
@@ -67,8 +67,7 @@ fn get_current_core_id() -> Option<usize> {
         })
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
@@ -79,8 +78,8 @@ async fn main() {
     info!("Using symbols: {:?}", symbols);
 
     // Check CPU core requirements (only for shards)
-    let core_ids = match check_cpu_requirements(&symbols) {
-        Ok(cores) => cores,
+    let (total_cores, core_ids) = match check_cpu_requirements(&symbols) {
+        Ok(result) => result,
         Err(err) => {
             error!("{}", err);
             std::process::exit(1);
@@ -89,6 +88,11 @@ async fn main() {
 
     // Allocate cores only to shards
     let shard_cores = allocate_shard_cores(&core_ids, &symbols);
+
+    // Calculate cores available for Tokio runtime
+    let tokio_worker_threads = total_cores.saturating_sub(symbols.len()).max(1);
+    info!("Configuring Tokio runtime with {} worker threads (total: {}, pinned: {})", 
+          tokio_worker_threads, total_cores, symbols.len());
 
     // Create the ingress channel for routing orders
     let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
@@ -163,23 +167,34 @@ async fn main() {
         ingress_handles.push(handle);
     }
 
-    // Create HTTP server
-    let app_state = AppState::new(ingress_sender);
-    let app = create_router(app_state);
+    // Build and configure Tokio runtime with limited worker threads
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(tokio_worker_threads)
+        .thread_name("tokio-worker")
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
 
-    // Start the server
-    let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    info!("Matching Engine Service listening on http://0.0.0.0:3000");
-    info!("Available endpoints:");
-    info!("  POST /buy   - Submit buy orders");
-    info!("  POST /sell  - Submit sell orders");
-    info!("  POST /health - Health check");
-    info!("  POST /symbol - Create new symbol");
-    info!("Supported symbols: {:?}", symbols);
+    // Run the HTTP server in the configured runtime
+    runtime.block_on(async {
+        // Create HTTP server
+        let app_state = AppState::new(ingress_sender);
+        let app = create_router(app_state);
 
-    if let Err(e) = axum::serve(listener, app).await {
-        error!("Server error: {}", e);
-    }
+        // Start the server
+        let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
+        info!("Matching Engine Service listening on http://0.0.0.0:3000");
+        info!("Available endpoints:");
+        info!("  POST /buy   - Submit buy orders");
+        info!("  POST /sell  - Submit sell orders");
+        info!("  POST /health - Health check");
+        info!("  POST /symbol - Create new symbol");
+        info!("Supported symbols: {:?}", symbols);
+
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("Server error: {}", e);
+        }
+    });
 
     // Wait for all threads to complete (this won't happen in normal operation)
     for handle in shard_handles {
