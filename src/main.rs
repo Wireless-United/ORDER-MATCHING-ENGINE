@@ -2,6 +2,12 @@ mod api;
 mod fabric;
 mod shard;
 mod types;
+mod algorithms;
+mod engine;
+
+mod utils {
+    pub mod affinity;
+}
 
 use api::{create_router, AppState};
 use fabric::Fabric;

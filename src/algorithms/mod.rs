@@ -11,6 +11,7 @@ pub mod errors;
 pub mod fifo;
 pub mod pro_rata;
 pub mod hybrid;
+pub mod hierarchical;
 pub mod test;
 pub mod matcher_bridge;
 
