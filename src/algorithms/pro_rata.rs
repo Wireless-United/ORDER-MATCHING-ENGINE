@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use crate::engine::{Order, Side, Request, OrderBookRef};
+use crate::types::{EngineOrder as Order, EngineSide as Side, Request, OrderBookRef};
 use crate::algorithms::fifo::Trade;
 
 #[allow(dead_code)]

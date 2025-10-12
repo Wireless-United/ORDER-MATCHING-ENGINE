@@ -1,4 +1,4 @@
-use crate::types::{Event, Order, Side, Trade, MatchingAlgorithm};
+use crate::types::{Event, Order};
 use crate::algorithms::matcher_bridge::HierarchicalMatcherBridge;
 use crossbeam_channel::Receiver;
 use crossbeam_queue::ArrayQueue;

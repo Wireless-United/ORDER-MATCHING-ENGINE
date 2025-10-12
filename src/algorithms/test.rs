@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod trade_ranking_tests {
-    use crate::engine::{Order, Side};
+    use crate::types::{EngineOrder as Order, EngineSide as Side};
     use crate::algorithms::fifo::FifoMatcher;
 
     #[test]

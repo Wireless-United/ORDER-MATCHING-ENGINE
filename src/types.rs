@@ -5,6 +5,58 @@ use chrono::{DateTime, Utc};
 
 static GLOBAL_ORDER_ID: AtomicU64 = AtomicU64::new(1);
 
+// Core types from engine.rs
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EngineSide {
+    Buy,
+    Sell,
+}
+
+#[derive(Debug, Clone)]
+pub struct EngineOrder {
+    pub id: u64,
+    pub side: EngineSide,
+    pub price: f64,
+    pub quantity: u64,
+    pub timestamp: DateTime<Utc>,
+}
+
+impl EngineOrder {
+    pub fn new(id: u64, side: EngineSide, price: f64, quantity: u64) -> Self {
+        Self {
+            id,
+            side,
+            price,
+            quantity,
+            timestamp: Utc::now(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.quantity == 0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub id: u64,
+    pub order: EngineOrder,
+}
+
+#[derive(Debug, Clone)]
+pub struct OrderBookRef {
+    pub symbol: String,
+}
+
+impl OrderBookRef {
+    pub fn validate_order(&self, _id: u64, _price: f64, _quantity: u64) -> bool {
+        // Placeholder validation - always returns true
+        true
+    }
+}
+
+// End of core types from engine.rs
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Side {
     BUY,
