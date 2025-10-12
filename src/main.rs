@@ -161,7 +161,7 @@ async fn main() {
     }
 
     // Create HTTP server
-    let app_state = AppState { ingress_sender };
+    let app_state = AppState::new(ingress_sender);
     let app = create_router(app_state);
 
     // Start the server
