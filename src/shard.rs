@@ -3,7 +3,9 @@ use crossbeam_channel::Receiver;
 use crossbeam_queue::ArrayQueue;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
-use tracing::{debug, info};
+#[allow(unused_imports)]
+use tracing::debug;
+use tracing::info;
 
 pub struct Shard {
     pub symbol: String,
@@ -37,8 +39,8 @@ impl Shard {
 
         loop {
             // Wait for wake-up signal
+            #[allow(unused_must_use)]
             if let Err(_) = self.wakeup_receiver.recv() {
-                debug!("Wakeup channel closed for symbol '{}'", self.symbol);
                 break;
             }
 
@@ -52,11 +54,6 @@ impl Shard {
     }
 
     fn process_event(&mut self, event: Event) {
-        debug!(
-            "Processing event for symbol '{}': {:?}",
-            self.symbol, event
-        );
-
         let order = Order::new(event.price, event.qty, event.side);
 
         match event.side {

@@ -10,7 +10,9 @@ use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error};
+#[allow(unused_imports)]
+use tracing::debug;
+use tracing::error;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -54,8 +56,6 @@ async fn handle_order(
     order: OrderIn,
     side: Side,
 ) -> Result<Json<Value>, StatusCode> {
-    debug!("Received {:?} order: {:?}", side, order);
-
     // Validate the symbol
     if !is_valid_symbol(&state.valid_symbols, &order.symbol) {
         error!("Invalid symbol: {}", order.symbol);
@@ -74,7 +74,6 @@ async fn handle_order(
     // Send to ingress channel
     match state.ingress_sender.send(event) {
         Ok(_) => {
-            debug!("Successfully sent {:?} order for symbol '{}'", side, order.symbol);
             Ok(Json(json!({
                 "status": "accepted",
                 "side": side,
@@ -129,8 +128,6 @@ impl AppState {
 }
 
 async fn create_symbol(state: AppState, body: Value) -> Result<Json<Value>, StatusCode> {
-    debug!("Received request to create symbol: {:?}", body);
-
     let symbol = match body["symbol"].as_str() {
         Some(s) => s.to_string(),
         None => {
@@ -154,7 +151,6 @@ async fn create_symbol(state: AppState, body: Value) -> Result<Json<Value>, Stat
             }
             
             symbols.insert(symbol.clone());
-            debug!("Successfully added symbol: {}", symbol);
             
             Ok(Json(json!({
                 "status": "symbol created",
