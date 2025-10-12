@@ -109,11 +109,16 @@ fn is_valid_symbol(valid_symbols: &Arc<Mutex<HashSet<String>>>, symbol: &str) ->
 }
 
 impl AppState {
+    pub fn get_initial_symbols() -> Vec<String> {
+        vec![
+            "Pranesh".to_string(),
+            "Superman".to_string(),
+            "Arnimzola".to_string(),
+        ]
+    }
+
     pub fn new(ingress_sender: Sender<Event>) -> Self {
-        let mut initial_symbols = HashSet::new();
-        initial_symbols.insert("Pranesh".to_string());
-        initial_symbols.insert("Superman".to_string());
-        initial_symbols.insert("Arnimzola".to_string());
+        let initial_symbols: HashSet<String> = Self::get_initial_symbols().into_iter().collect();
         
         Self {
             ingress_sender,
