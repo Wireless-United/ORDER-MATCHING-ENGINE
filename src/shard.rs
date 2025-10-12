@@ -3,7 +3,9 @@ use crate::algorithms::matcher_bridge::HierarchicalMatcherBridge;
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+#[allow(unused_imports)]
+use tracing::debug;
+use tracing::info;
 
 pub struct Shard {
     pub symbol: String,
@@ -44,8 +46,8 @@ impl Shard {
 
         loop {
             // Wait for wake-up signal
+            #[allow(unused_must_use)]
             if let Err(_) = self.wakeup_receiver.recv() {
-                debug!("Wakeup channel closed for symbol '{}'", self.symbol);
                 break;
             }
 

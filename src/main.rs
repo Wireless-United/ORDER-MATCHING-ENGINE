@@ -25,13 +25,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::thread;
 use tokio::net::TcpListener;
-use tracing::{error, info, warn};
+use tracing::{error, info};
+#[allow(unused_imports)]
+use tracing::warn;
 use tracing_subscriber;
 
 const QUEUE_CAPACITY: usize = 1000;
 const NUM_INGRESS_WORKERS: usize = 5;
 const NUM_EGRESS_WORKERS: usize = 3;
 
+#[allow(dead_code)]
 fn check_cpu_requirements(symbols: &[String]) -> Result<(usize, Vec<core_affinity::CoreId>), String> {
     let num_cores = num_cpus::get();
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -68,6 +71,7 @@ fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) 
     shard_cores
 }
 
+#[allow(dead_code)]
 fn get_current_core_id() -> Option<usize> {
     // Try to get current CPU core (Linux specific)
     std::fs::read_to_string("/proc/self/stat")
@@ -150,11 +154,14 @@ fn main() {
                     info!("Shard '{}' pinned to core {:?}", symbol_owned, assigned_core);
                 }
 
-                // Log current core (verification)
-                if let Some(current_core) = get_current_core_id() {
-                    info!("Shard '{}' verified running on core {}", symbol_owned, current_core);
-                } else {
-                    warn!("Could not verify core assignment for shard '{}'", symbol_owned);
+                // Log current core (verification) - Linux only
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(current_core) = get_current_core_id() {
+                        info!("Shard '{}' verified running on core {}", symbol_owned, current_core);
+                    } else {
+                        warn!("Could not verify core assignment for shard '{}'", symbol_owned);
+                    }
                 }
 
                 // Run the shard
@@ -219,7 +226,10 @@ fn main() {
 
     // Wait for all threads to complete (this won't happen in normal operation)
     for handle in shard_handles {
-        let _ = handle.join();
+        #[allow(unused_must_use)]
+        {
+            handle.join();
+        }
     }
 
     for handle in ingress_handles {

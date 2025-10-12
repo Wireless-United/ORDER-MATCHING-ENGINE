@@ -3,7 +3,9 @@ use crossbeam_channel::{Receiver, Sender};
 use crossbeam_queue::ArrayQueue;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
+#[allow(unused_imports)]
+use tracing::warn;
 
 pub struct Fabric {
     pub ingress_receiver: Receiver<Event>,
@@ -62,8 +64,9 @@ impl Fabric {
 
                     // Signal the shard that a new event is available
                     if let Some(wakeup_sender) = self.shard_wakeups.get(symbol) {
-                        if let Err(_) = wakeup_sender.send(()) {
-                            error!("Failed to send wakeup signal to shard '{}'", symbol);
+                        #[allow(unused_must_use)]
+                        {
+                            wakeup_sender.send(());
                         }
                     }
                 }
