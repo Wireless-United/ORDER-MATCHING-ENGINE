@@ -19,15 +19,14 @@ use tracing_subscriber;
 
 const QUEUE_CAPACITY: usize = 1000;
 const NUM_INGRESS_WORKERS: usize = 5;
-const SYMBOLS: &[&str] = &["Pranesh", "Superman", "Arnimzola"];
 
-fn check_cpu_requirements() -> Result<Vec<core_affinity::CoreId>, String> {
+fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreId>, String> {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
     let num_cores = core_ids.len();
-    let required_cores = SYMBOLS.len(); // Only check for shard cores
+    let required_cores = symbols.len(); // Only check for shard cores
 
     info!("System has {} CPU cores available", num_cores);
-    info!("Required cores: {} symbols (shards only)", SYMBOLS.len());
+    info!("Required cores: {} symbols (shards only)", symbols.len());
 
     if num_cores < required_cores {
         return Err(format!(
@@ -39,12 +38,12 @@ fn check_cpu_requirements() -> Result<Vec<core_affinity::CoreId>, String> {
     Ok(core_ids)
 }
 
-fn allocate_shard_cores(core_ids: &[core_affinity::CoreId]) -> HashMap<String, core_affinity::CoreId> {
+fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) -> HashMap<String, core_affinity::CoreId> {
     let mut shard_cores = HashMap::new();
 
     // Allocate first N cores to shards only
-    for (i, &symbol) in SYMBOLS.iter().enumerate() {
-        shard_cores.insert(symbol.to_string(), core_ids[i]);
+    for (i, symbol) in symbols.iter().enumerate() {
+        shard_cores.insert(symbol.clone(), core_ids[i]);
     }
 
     info!("Core allocation:");
@@ -75,8 +74,12 @@ async fn main() {
 
     info!("Starting Matching Engine Service");
 
+    // Get initial symbols from AppState
+    let symbols = AppState::get_initial_symbols();
+    info!("Using symbols: {:?}", symbols);
+
     // Check CPU core requirements (only for shards)
-    let core_ids = match check_cpu_requirements() {
+    let core_ids = match check_cpu_requirements(&symbols) {
         Ok(cores) => cores,
         Err(err) => {
             error!("{}", err);
@@ -85,7 +88,7 @@ async fn main() {
     };
 
     // Allocate cores only to shards
-    let shard_cores = allocate_shard_cores(&core_ids);
+    let shard_cores = allocate_shard_cores(&core_ids, &symbols);
 
     // Create the ingress channel for routing orders
     let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
@@ -96,22 +99,22 @@ async fn main() {
     let mut shard_handles = Vec::new();
 
     // Create shards for each symbol
-    for &symbol in SYMBOLS {
+    for symbol in &symbols {
         info!("Initializing shard for symbol: {}", symbol);
 
         // Create input queue for this shard
         let input_queue = Arc::new(ArrayQueue::new(QUEUE_CAPACITY));
-        shard_queues.insert(symbol.to_string(), input_queue.clone());
+        shard_queues.insert(symbol.clone(), input_queue.clone());
 
         // Create wakeup channel for this shard
         let (wakeup_sender, wakeup_receiver) = unbounded();
-        shard_wakeups.insert(symbol.to_string(), wakeup_sender);
+        shard_wakeups.insert(symbol.clone(), wakeup_sender);
 
         // Get assigned core for this shard
         let assigned_core = shard_cores[symbol];
 
         // Create and spawn shard thread with core pinning and naming
-        let symbol_owned = symbol.to_string();
+        let symbol_owned = symbol.clone();
         let mut shard = Shard::new(symbol_owned.clone(), input_queue, wakeup_receiver);
         
         let handle = thread::Builder::new()
@@ -171,7 +174,8 @@ async fn main() {
     info!("  POST /buy   - Submit buy orders");
     info!("  POST /sell  - Submit sell orders");
     info!("  POST /health - Health check");
-    info!("Supported symbols: {:?}", SYMBOLS);
+    info!("  POST /symbol - Create new symbol");
+    info!("Supported symbols: {:?}", symbols);
 
     if let Err(e) = axum::serve(listener, app).await {
         error!("Server error: {}", e);
