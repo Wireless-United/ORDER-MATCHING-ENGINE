@@ -1,15 +1,16 @@
-use crate::types::{Event, Order};
+use crate::types::{Event, Order, Trade};
 use crate::algorithms::matcher_bridge::HierarchicalMatcherBridge;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub struct Shard {
     pub symbol: String,
     pub hierarchical_matcher: HierarchicalMatcherBridge,
     pub input_queue: Arc<ArrayQueue<Event>>,
     pub wakeup_receiver: Receiver<()>,
+    pub egress_sender: Option<Sender<Trade>>,
     pub total_trades: usize,
 }
 
@@ -24,8 +25,14 @@ impl Shard {
             hierarchical_matcher: HierarchicalMatcherBridge::new_with_config(0.4, 0.3, 0.3), // 40% FIFO, 30% Pro-Rata, 30% Hybrid
             input_queue,
             wakeup_receiver,
+            egress_sender: None,
             total_trades: 0,
         }
+    }
+
+    pub fn set_egress_sender(&mut self, sender: Sender<Trade>) {
+        self.egress_sender = Some(sender);
+        info!("Egress sender configured for shard '{}'", self.symbol);
     }
 
     pub fn run(&mut self) {
@@ -85,6 +92,15 @@ impl Shard {
                     trade.price,
                     trade.trade_id
                 );
+
+                // Send trade to egress channel
+                if let Some(ref egress_sender) = self.egress_sender {
+                    if let Err(e) = egress_sender.send(trade.clone()) {
+                        warn!("Failed to send trade {} to egress channel: {:?}", trade.trade_id, e);
+                    } else {
+                        debug!("Trade {} sent to egress channel", trade.trade_id);
+                    }
+                }
             }
         } else {
             debug!(

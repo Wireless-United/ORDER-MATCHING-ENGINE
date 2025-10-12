@@ -14,10 +14,10 @@ mod utils {
     pub mod affinity;
 }
 
-use api::{create_router, AppState};
+use api::{create_router, spawn_egress_workers, AppState};
 use fabric::Fabric;
 use shard::Shard;
-use types::Event;
+use types::{Event, Trade};
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crossbeam_queue::ArrayQueue;
@@ -30,6 +30,7 @@ use tracing_subscriber;
 
 const QUEUE_CAPACITY: usize = 1000;
 const NUM_INGRESS_WORKERS: usize = 5;
+const NUM_EGRESS_WORKERS: usize = 3;
 
 fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreId>, String> {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -104,6 +105,10 @@ async fn main() {
     // Create the ingress channel for routing orders
     let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
 
+    // Create the egress channel for trade outputs
+    let (egress_sender, egress_receiver): (Sender<Trade>, Receiver<Trade>) = unbounded();
+    info!("Created egress channel for trade outputs");
+
     // Initialize shard infrastructure
     let mut shard_queues: HashMap<String, Arc<ArrayQueue<Event>>> = HashMap::new();
     let mut shard_wakeups: HashMap<String, Sender<()>> = HashMap::new();
@@ -127,6 +132,9 @@ async fn main() {
         // Create and spawn shard thread with core pinning and naming
         let symbol_owned = symbol.clone();
         let mut shard = Shard::new(symbol_owned.clone(), input_queue, wakeup_receiver);
+        
+        // Configure egress sender for this shard
+        shard.set_egress_sender(egress_sender.clone());
         
         let handle = thread::Builder::new()
             .name(format!("shard-{}", symbol))
@@ -174,8 +182,16 @@ async fn main() {
         ingress_handles.push(handle);
     }
 
+    // Spawn egress worker threads WITHOUT core pinning
+    info!("Spawning {} egress workers", NUM_EGRESS_WORKERS);
+    let egress_handles = spawn_egress_workers(egress_receiver.clone(), NUM_EGRESS_WORKERS);
+
     // Create HTTP server
     let app_state = AppState::new(ingress_sender);
+    
+    // Configure egress receiver in AppState
+    app_state.set_egress_receiver(egress_receiver);
+    
     let app = create_router(app_state);
 
     // Start the server
@@ -187,6 +203,10 @@ async fn main() {
     info!("  POST /health - Health check");
     info!("  POST /symbol - Create new symbol");
     info!("Supported symbols: {:?}", symbols);
+    info!("Thread Summary:");
+    info!("  - {} shard threads (pinned to cores)", symbols.len());
+    info!("  - {} ingress workers (not pinned)", NUM_INGRESS_WORKERS);
+    info!("  - {} egress workers (not pinned)", NUM_EGRESS_WORKERS);
 
     if let Err(e) = axum::serve(listener, app).await {
         error!("Server error: {}", e);
@@ -198,6 +218,10 @@ async fn main() {
     }
 
     for handle in ingress_handles {
+        let _ = handle.join();
+    }
+
+    for handle in egress_handles {
         let _ = handle.join();
     }
 
