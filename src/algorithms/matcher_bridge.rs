@@ -325,3 +325,289 @@ mod tests {
         assert_eq!(matcher.ask_depth(), 1); // Remaining 20
     }
 }
+
+    // ========================================================================
+    // Additional Tests for FifoMatcherBridge
+    // ========================================================================
+
+    #[test]
+    fn test_fifo_bridge_multiple_matches() {
+        let mut matcher = FifoMatcherBridge::new();
+        
+        // Add multiple sell orders
+        matcher.match_order(ShardOrder {
+            order_id: 1,
+            side: ShardSide::SELL,
+            price: 10000,
+            qty: 20,
+            timestamp: Utc::now(),
+        });
+        
+        matcher.match_order(ShardOrder {
+            order_id: 2,
+            side: ShardSide::SELL,
+            price: 10000,
+            qty: 30,
+            timestamp: Utc::now(),
+        });
+        
+        // Matching buy order
+        let buy = ShardOrder {
+            order_id: 3,
+            side: ShardSide::BUY,
+            price: 10000,
+            qty: 40,
+            timestamp: Utc::now(),
+        };
+        
+        let trades = matcher.match_order(buy);
+        assert_eq!(trades.len(), 2);
+        let total: u64 = trades.iter().map(|t| t.qty).sum();
+        assert_eq!(total, 40);
+    }
+
+    #[test]
+    fn test_fifo_bridge_orderbook_state() {
+        let mut matcher = FifoMatcherBridge::new();
+        
+        matcher.match_order(ShardOrder {
+            order_id: 1,
+            side: ShardSide::BUY,
+            price: 10000,
+            qty: 50,
+            timestamp: Utc::now(),
+        });
+        
+        matcher.match_order(ShardOrder {
+            order_id: 2,
+            side: ShardSide::SELL,
+            price: 10100,
+            qty: 30,
+            timestamp: Utc::now(),
+        });
+        
+        let (bids, asks) = matcher.get_orderbook_state();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(asks.len(), 1);
+        assert_eq!(bids[0].order_id, 1);
+        assert_eq!(asks[0].order_id, 2);
+    }
+
+    #[test]
+    fn test_fifo_bridge_default() {
+        let matcher1 = FifoMatcherBridge::new();
+        let matcher2 = FifoMatcherBridge::default();
+        
+        assert_eq!(matcher1.bid_depth(), matcher2.bid_depth());
+        assert_eq!(matcher1.ask_depth(), matcher2.ask_depth());
+    }
+
+    // ========================================================================
+    // Additional Tests for ProRataMatcherBridge
+    // ========================================================================
+
+    #[test]
+    fn test_pro_rata_bridge_matching() {
+        let mut matcher = ProRataMatcherBridge::new();
+        
+        // Add equal sell orders at same price
+        matcher.match_order(ShardOrder {
+            order_id: 1,
+            side: ShardSide::SELL,
+            price: 10000,
+            qty: 50,
+            timestamp: Utc::now(),
+        });
+        
+        matcher.match_order(ShardOrder {
+            order_id: 2,
+            side: ShardSide::SELL,
+            price: 10000,
+            qty: 50,
+            timestamp: Utc::now(),
+        });
+        
+        // Matching buy
+        let buy = ShardOrder {
+            order_id: 3,
+            side: ShardSide::BUY,
+            price: 10000,
+            qty: 100,
+            timestamp: Utc::now(),
+        };
+        
+        let trades = matcher.match_order(buy);
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].qty, 50);
+        assert_eq!(trades[1].qty, 50);
+    }
+
+    #[test]
+    fn test_pro_rata_bridge_orderbook_state() {
+        let mut matcher = ProRataMatcherBridge::new();
+        
+        matcher.match_order(ShardOrder {
+            order_id: 1,
+            side: ShardSide::BUY,
+            price: 10000,
+            qty: 50,
+            timestamp: Utc::now(),
+        });
+        
+        let (bids, asks) = matcher.get_orderbook_state();
+        assert_eq!(bids.len(), 1);
+        assert_eq!(asks.len(), 0);
+    }
+
+    #[test]
+    fn test_pro_rata_bridge_default() {
+        let matcher = ProRataMatcherBridge::default();
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 0);
+    }
+
+    // ========================================================================
+    // Additional Tests for HybridMatcherBridge
+    // ========================================================================
+
+    #[test]
+    fn test_hybrid_bridge_custom_config() {
+        let matcher = HybridMatcherBridge::new_with_config(0.7);
+        assert_eq!(matcher.bid_depth(), 0);
+    }
+
+    #[test]
+    fn test_hybrid_bridge_matching() {
+        let mut matcher = HybridMatcherBridge::new();
+        
+        matcher.match_order(ShardOrder {
+            order_id: 1,
+            side: ShardSide::SELL,
+            price: 10000,
+            qty: 100,
+            timestamp: Utc::now(),
+        });
+        
+        let buy = ShardOrder {
+            order_id: 2,
+            side: ShardSide::BUY,
+            price: 10000,
+            qty: 50,
+            timestamp: Utc::now(),
+        };
+        
+        let trades = matcher.match_order(buy);
+        assert!(!trades.is_empty());
+    }
+
+    #[test]
+    fn test_hybrid_bridge_orderbook_state() {
+        let mut matcher = HybridMatcherBridge::new();
+        
+        matcher.match_order(ShardOrder {
+            order_id: 1,
+            side: ShardSide::BUY,
+            price: 10000,
+            qty: 50,
+            timestamp: Utc::now(),
+        });
+        
+        let (bids, asks) = matcher.get_orderbook_state();
+        // Currently returns empty vectors, but depths should work
+        assert_eq!(matcher.bid_depth(), 1);
+    }
+
+    #[test]
+    fn test_hybrid_bridge_default() {
+        let matcher = HybridMatcherBridge::default();
+        assert!(matcher.bid_depth() == 0);
+    }
+
+    // ========================================================================
+    // Additional Tests for HierarchicalMatcherBridge
+    // ========================================================================
+
+    #[test]
+    fn test_hierarchical_bridge_default() {
+        let matcher = HierarchicalMatcherBridge::default();
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 0);
+    }
+
+    #[test]
+    fn test_hierarchical_bridge_custom_config() {
+        let matcher = HierarchicalMatcherBridge::new_with_config(0.5, 0.3, 0.2);
+        assert_eq!(matcher.bid_depth(), 0);
+    }
+
+    #[test]
+    fn test_hierarchical_bridge_matching() {
+        let mut matcher = HierarchicalMatcherBridge::new();
+        
+        // Create order
+        let order = ShardOrder {
+            order_id: 1,
+            side: ShardSide::BUY,
+            price: 10000,
+            qty: 100,
+            timestamp: Utc::now(),
+        };
+        
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0); // No matching orders
+    }
+
+    #[test]
+    fn test_hierarchical_bridge_phase_stats() {
+        let matcher = HierarchicalMatcherBridge::new();
+        let stats = matcher.get_phase_stats();
+        assert!(stats.contains("FIFO"));
+        assert!(stats.contains("ProRata"));
+        assert!(stats.contains("Hybrid"));
+    }
+
+    // ========================================================================
+    // Price Conversion Tests
+    // ========================================================================
+
+    #[test]
+    fn test_price_scale_conversion_roundtrip() {
+        let shard_order = ShardOrder {
+            order_id: 1,
+            side: ShardSide::BUY,
+            price: 12345, // 123.45
+            qty: 100,
+            timestamp: Utc::now(),
+        };
+
+        let engine_order = shard_order_to_engine_order(&shard_order);
+        assert_eq!(engine_order.price, 123.45);
+
+        let back_to_shard = engine_order_to_shard_order(&engine_order);
+        assert_eq!(back_to_shard.price, shard_order.price);
+    }
+
+    #[test]
+    fn test_price_conversion_edge_cases() {
+        // Test zero price
+        let order1 = ShardOrder {
+            order_id: 1,
+            side: ShardSide::BUY,
+            price: 0,
+            qty: 100,
+            timestamp: Utc::now(),
+        };
+        let engine = shard_order_to_engine_order(&order1);
+        assert_eq!(engine.price, 0.0);
+
+        // Test large price
+        let order2 = ShardOrder {
+            order_id: 2,
+            side: ShardSide::BUY,
+            price: 1000000,
+            qty: 100,
+            timestamp: Utc::now(),
+        };
+        let engine2 = shard_order_to_engine_order(&order2);
+        assert_eq!(engine2.price, 10000.0);
+    }

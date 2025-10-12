@@ -123,3 +123,138 @@ impl Shard {
         format!("Hierarchical: {} bids, {} asks", bids, asks)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossbeam_channel::unbounded;
+
+    #[test]
+    fn test_shard_creation() {
+        let (_, wakeup_rx) = unbounded();
+        let queue = Arc::new(ArrayQueue::new(100));
+        
+        let shard = Shard::new(
+            "BTCUSD".to_string(),
+            queue,
+            wakeup_rx,
+        );
+        
+        assert_eq!(shard.symbol, "BTCUSD");
+        assert_eq!(shard.total_trades, 0);
+    }
+
+    #[test]
+    fn test_shard_set_egress_sender() {
+        let (_, wakeup_rx) = unbounded();
+        let queue = Arc::new(ArrayQueue::new(100));
+        let (egress_tx, _) = unbounded();
+        
+        let mut shard = Shard::new(
+            "BTCUSD".to_string(),
+            queue,
+            wakeup_rx,
+        );
+        
+        shard.set_egress_sender(egress_tx);
+        assert!(shard.egress_sender.is_some());
+    }
+
+    #[test]
+    fn test_shard_process_event() {
+        let (_, wakeup_rx) = unbounded();
+        let queue = Arc::new(ArrayQueue::new(100));
+        let (egress_tx, egress_rx) = unbounded();
+        
+        let mut shard = Shard::new(
+            "BTCUSD".to_string(),
+            queue,
+            wakeup_rx,
+        );
+        
+        shard.set_egress_sender(egress_tx);
+        
+        // Create a buy order event
+        let event = Event::new_order(
+            Side::BUY,
+            10000,
+            100,
+            "BTCUSD".to_string(),
+        );
+        
+        shard.process_event(event);
+        
+        // No trades expected with empty book
+        assert!(egress_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_shard_get_stats() {
+        let (_, wakeup_rx) = unbounded();
+        let queue = Arc::new(ArrayQueue::new(100));
+        
+        let shard = Shard::new(
+            "BTCUSD".to_string(),
+            queue,
+            wakeup_rx,
+        );
+        
+        let (bids, asks) = shard.get_stats();
+        assert_eq!(bids, 0);
+        assert_eq!(asks, 0);
+    }
+
+    #[test]
+    fn test_shard_get_all_stats() {
+        let (_, wakeup_rx) = unbounded();
+        let queue = Arc::new(ArrayQueue::new(100));
+        
+        let shard = Shard::new(
+            "BTCUSD".to_string(),
+            queue,
+            wakeup_rx,
+        );
+        
+        let stats = shard.get_all_stats();
+        assert!(stats.contains("Hierarchical"));
+        assert!(stats.contains("bids"));
+        assert!(stats.contains("asks"));
+    }
+
+    #[test]
+    fn test_shard_process_matching_events() {
+        let (_, wakeup_rx) = unbounded();
+        let queue = Arc::new(ArrayQueue::new(100));
+        let (egress_tx, egress_rx) = unbounded();
+        
+        let mut shard = Shard::new(
+            "BTCUSD".to_string(),
+            queue,
+            wakeup_rx,
+        );
+        
+        shard.set_egress_sender(egress_tx);
+        
+        // Add a sell order
+        let sell_event = Event::new_order(
+            Side::SELL,
+            10000,
+            50,
+            "BTCUSD".to_string(),
+        );
+        shard.process_event(sell_event);
+        
+        // Add a matching buy order
+        let buy_event = Event::new_order(
+            Side::BUY,
+            10000,
+            50,
+            "BTCUSD".to_string(),
+        );
+        shard.process_event(buy_event);
+        
+        // Should have a trade
+        assert!(shard.total_trades > 0);
+        assert!(egress_rx.try_recv().is_ok());
+    }
+}

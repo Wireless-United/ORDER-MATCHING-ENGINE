@@ -378,3 +378,395 @@ pub fn process(request: Request, _order_book: &OrderBookRef) -> Vec<Trade> {
     // Process the order
     matcher.match_order(request.order)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn create_buy_order(id: u64, price: f64, quantity: u64) -> Order {
+        Order::new(id, Side::Buy, price, quantity)
+    }
+
+    fn create_sell_order(id: u64, price: f64, quantity: u64) -> Order {
+        Order::new(id, Side::Sell, price, quantity)
+    }
+
+    // ========================================================================
+    // Configuration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_default_config() {
+        let config = HybridConfig::default();
+        assert_eq!(config.fifo_percentage, 0.5);
+    }
+
+    #[test]
+    fn test_custom_config() {
+        let config = HybridConfig {
+            fifo_percentage: 0.7,
+        };
+        assert_eq!(config.fifo_percentage, 0.7);
+    }
+
+    // ========================================================================
+    // Basic Functionality Tests
+    // ========================================================================
+
+    #[test]
+    fn test_hybrid_matcher_creation() {
+        let matcher = HybridMatcher::new();
+        assert!(matcher.is_empty());
+        assert_eq!(matcher.config.fifo_percentage, 0.5);
+    }
+
+    #[test]
+    fn test_hybrid_matcher_with_config() {
+        let config = HybridConfig {
+            fifo_percentage: 0.6,
+        };
+        let matcher = HybridMatcher::new_with_config(config);
+        assert_eq!(matcher.config.fifo_percentage, 0.6);
+    }
+
+    // ========================================================================
+    // Validation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_reject_zero_quantity() {
+        let mut matcher = HybridMatcher::new();
+        let order = create_buy_order(1, 100.0, 0);
+        
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[test]
+    fn test_reject_invalid_config() {
+        let config = HybridConfig {
+            fifo_percentage: 1.5, // Invalid > 1.0
+        };
+        let mut matcher = HybridMatcher::new_with_config(config);
+        
+        let order = create_buy_order(1, 100.0, 100);
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[test]
+    fn test_reject_negative_config() {
+        let config = HybridConfig {
+            fifo_percentage: -0.1,
+        };
+        let mut matcher = HybridMatcher::new_with_config(config);
+        
+        let order = create_buy_order(1, 100.0, 100);
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0);
+    }
+
+    // ========================================================================
+    // Hybrid Matching Tests - 50/50 Split
+    // ========================================================================
+
+    #[test]
+    fn test_hybrid_fifty_fifty_split() {
+        let mut matcher = HybridMatcher::new(); // Default 50/50
+        
+        // Add resting sell orders
+        matcher.match_order(create_sell_order(1, 100.0, 25));
+        matcher.match_order(create_sell_order(2, 100.0, 25));
+        matcher.match_order(create_sell_order(3, 100.0, 25));
+        matcher.match_order(create_sell_order(4, 100.0, 25));
+        
+        // Buy 100: 50 FIFO, 50 Pro-Rata
+        let buy = create_buy_order(5, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        // Should execute trades
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn test_hybrid_mostly_fifo() {
+        let config = HybridConfig {
+            fifo_percentage: 0.8, // 80% FIFO, 20% Pro-Rata
+        };
+        let mut matcher = HybridMatcher::new_with_config(config);
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 100.0, 50));
+        
+        let buy = create_buy_order(3, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn test_hybrid_mostly_pro_rata() {
+        let config = HybridConfig {
+            fifo_percentage: 0.2, // 20% FIFO, 80% Pro-Rata
+        };
+        let mut matcher = HybridMatcher::new_with_config(config);
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 100.0, 50));
+        
+        let buy = create_buy_order(3, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 100);
+    }
+
+    // ========================================================================
+    // FIFO Phase Tests
+    // ========================================================================
+
+    #[test]
+    fn test_fifo_phase_order_priority() {
+        let mut matcher = HybridMatcher::new();
+        
+        // Add orders in specific order
+        matcher.match_order(create_sell_order(1, 100.0, 100));
+        matcher.match_order(create_sell_order(2, 100.0, 100));
+        
+        let buy = create_buy_order(3, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        // FIFO phase (50%) should match first order
+        assert!(!trades.is_empty());
+        assert!(trades.iter().any(|t| t.sell_id == 1));
+    }
+
+    // ========================================================================
+    // Price Priority Tests
+    // ========================================================================
+
+    #[test]
+    fn test_no_match_price_spread() {
+        let mut matcher = HybridMatcher::new();
+        
+        let sell = create_sell_order(1, 105.0, 50);
+        matcher.match_order(sell);
+        
+        let buy = create_buy_order(2, 100.0, 50);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+        assert_eq!(matcher.ask_depth(), 1);
+    }
+
+    #[test]
+    fn test_match_at_best_price_only() {
+        let mut matcher = HybridMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 101.0, 50));
+        
+        let buy = create_buy_order(3, 105.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        // Should only match at 100.0 price level
+        for trade in &trades {
+            assert_eq!(trade.price, 100.0);
+        }
+    }
+
+    // ========================================================================
+    // Partial Fill Tests
+    // ========================================================================
+
+    #[test]
+    fn test_partial_fill_with_remainder() {
+        let mut matcher = HybridMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 30));
+        
+        let buy = create_buy_order(2, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 30);
+        
+        // Remainder should be in book
+        assert_eq!(matcher.bid_depth(), 1);
+    }
+
+    // ========================================================================
+    // Empty Book Tests
+    // ========================================================================
+
+    #[test]
+    fn test_empty_book_add_order() {
+        let mut matcher = HybridMatcher::new();
+        
+        let buy = create_buy_order(1, 100.0, 50);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+    }
+
+    // ========================================================================
+    // Best Bid/Ask Tests
+    // ========================================================================
+
+    #[test]
+    fn test_best_bid() {
+        let mut matcher = HybridMatcher::new();
+        
+        assert!(matcher.best_bid().is_none());
+        
+        matcher.match_order(create_buy_order(1, 100.0, 50));
+        assert!(matcher.best_bid().is_some());
+    }
+
+    #[test]
+    fn test_best_ask() {
+        let mut matcher = HybridMatcher::new();
+        
+        assert!(matcher.best_ask().is_none());
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        assert!(matcher.best_ask().is_some());
+    }
+
+    // ========================================================================
+    // Clear Tests
+    // ========================================================================
+
+    #[test]
+    fn test_clear() {
+        let mut matcher = HybridMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 105.0, 50));
+        
+        matcher.clear();
+        
+        assert!(matcher.is_empty());
+    }
+
+    // ========================================================================
+    // Iterator Tests
+    // ========================================================================
+
+    #[test]
+    fn test_bids_iterator() {
+        let mut matcher = HybridMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 10));
+        matcher.match_order(create_buy_order(2, 101.0, 20));
+        
+        let bids: Vec<_> = matcher.bids_iter().collect();
+        assert_eq!(bids.len(), 2);
+    }
+
+    #[test]
+    fn test_asks_iterator() {
+        let mut matcher = HybridMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 10));
+        matcher.match_order(create_sell_order(2, 101.0, 20));
+        
+        let asks: Vec<_> = matcher.asks_iter().collect();
+        assert_eq!(asks.len(), 2);
+    }
+
+    // ========================================================================
+    // Process Function Tests
+    // ========================================================================
+
+    #[test]
+    fn test_process_function() {
+        let order_book = OrderBookRef {
+            symbol: "BTCUSD".to_string(),
+        };
+        
+        let order = Order::new(1, Side::Buy, 100.0, 50);
+        let request = Request { id: 1, order };
+        
+        let trades = process(request, &order_book);
+        assert_eq!(trades.len(), 0);
+    }
+
+    // ========================================================================
+    // Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_zero_fifo_percentage() {
+        let config = HybridConfig {
+            fifo_percentage: 0.0, // 100% Pro-Rata
+        };
+        let mut matcher = HybridMatcher::new_with_config(config);
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 100.0, 50));
+        
+        let buy = create_buy_order(3, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn test_full_fifo_percentage() {
+        let config = HybridConfig {
+            fifo_percentage: 1.0, // 100% FIFO
+        };
+        let mut matcher = HybridMatcher::new_with_config(config);
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 100.0, 50));
+        
+        let buy = create_buy_order(3, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 100);
+    }
+
+    #[test]
+    fn test_odd_quantity_split() {
+        let mut matcher = HybridMatcher::new(); // 50/50
+        
+        matcher.match_order(create_sell_order(1, 100.0, 100));
+        
+        let buy = create_buy_order(2, 100.0, 99);
+        let trades = matcher.match_order(buy);
+        
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 99);
+    }
+
+    #[test]
+    fn test_sell_side_matching() {
+        let mut matcher = HybridMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 50));
+        matcher.match_order(create_buy_order(2, 100.0, 50));
+        
+        let sell = create_sell_order(3, 100.0, 100);
+        let trades = matcher.match_order(sell);
+        
+        assert!(!trades.is_empty());
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 100);
+    }
+}

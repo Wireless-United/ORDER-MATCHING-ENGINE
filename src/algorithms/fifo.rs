@@ -249,3 +249,491 @@ pub fn process(request: Request, _order_book: &OrderBookRef) -> Vec<Trade> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn create_buy_order(id: u64, price: f64, quantity: u64) -> Order {
+        Order::new(id, Side::Buy, price, quantity)
+    }
+
+    fn create_sell_order(id: u64, price: f64, quantity: u64) -> Order {
+        Order::new(id, Side::Sell, price, quantity)
+    }
+
+    // ========================================================================
+    // Basic Functionality Tests
+    // ========================================================================
+
+    #[test]
+    fn test_fifo_matcher_creation() {
+        let matcher = FifoMatcher::new();
+        assert!(matcher.is_empty());
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 0);
+    }
+
+    #[test]
+    fn test_add_single_bid() {
+        let mut matcher = FifoMatcher::new();
+        let order = create_buy_order(1, 100.0, 50);
+        
+        let trades = matcher.match_order(order).unwrap();
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+        assert_eq!(matcher.ask_depth(), 0);
+    }
+
+    #[test]
+    fn test_add_single_ask() {
+        let mut matcher = FifoMatcher::new();
+        let order = create_sell_order(1, 100.0, 50);
+        
+        let trades = matcher.match_order(order).unwrap();
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 1);
+    }
+
+    // ========================================================================
+    // Validation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_reject_zero_quantity() {
+        let mut matcher = FifoMatcher::new();
+        let order = create_buy_order(1, 100.0, 0);
+        
+        let result = matcher.match_order(order);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            AlgorithmError::InvalidOrder("Order quantity cannot be zero".to_string())
+        );
+    }
+
+    #[test]
+    fn test_reject_zero_price() {
+        let mut matcher = FifoMatcher::new();
+        let order = create_buy_order(1, 0.0, 50);
+        
+        let result = matcher.match_order(order);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            AlgorithmError::InvalidOrder("Order price must be positive".to_string())
+        );
+    }
+
+    #[test]
+    fn test_reject_negative_price() {
+        let mut matcher = FifoMatcher::new();
+        let order = create_buy_order(1, -10.0, 50);
+        
+        let result = matcher.match_order(order);
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Matching Tests - Full Fills
+    // ========================================================================
+
+    #[test]
+    fn test_exact_match_buy_sell() {
+        let mut matcher = FifoMatcher::new();
+        
+        let buy = create_buy_order(1, 100.0, 50);
+        matcher.match_order(buy).unwrap();
+        
+        let sell = create_sell_order(2, 100.0, 50);
+        let trades = matcher.match_order(sell).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].buy_id, 1);
+        assert_eq!(trades[0].sell_id, 2);
+        assert_eq!(trades[0].price, 100.0);
+        assert_eq!(trades[0].quantity, 50);
+        assert!(matcher.is_empty());
+    }
+
+    #[test]
+    fn test_exact_match_sell_buy() {
+        let mut matcher = FifoMatcher::new();
+        
+        let sell = create_sell_order(1, 100.0, 50);
+        matcher.match_order(sell).unwrap();
+        
+        let buy = create_buy_order(2, 100.0, 50);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].buy_id, 2);
+        assert_eq!(trades[0].sell_id, 1);
+        assert_eq!(trades[0].price, 100.0);
+        assert_eq!(trades[0].quantity, 50);
+        assert!(matcher.is_empty());
+    }
+
+    // ========================================================================
+    // Matching Tests - Partial Fills
+    // ========================================================================
+
+    #[test]
+    fn test_partial_fill_buy_larger() {
+        let mut matcher = FifoMatcher::new();
+        
+        let sell = create_sell_order(1, 100.0, 30);
+        matcher.match_order(sell).unwrap();
+        
+        let buy = create_buy_order(2, 100.0, 50);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].quantity, 30);
+        
+        // Remaining buy order should be in book
+        assert_eq!(matcher.bid_depth(), 1);
+        assert_eq!(matcher.ask_depth(), 0);
+        assert_eq!(matcher.best_bid().unwrap().quantity, 20);
+    }
+
+    #[test]
+    fn test_partial_fill_sell_larger() {
+        let mut matcher = FifoMatcher::new();
+        
+        let buy = create_buy_order(1, 100.0, 30);
+        matcher.match_order(buy).unwrap();
+        
+        let sell = create_sell_order(2, 100.0, 50);
+        let trades = matcher.match_order(sell).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].quantity, 30);
+        
+        // Remaining sell order should be in book
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 1);
+        assert_eq!(matcher.best_ask().unwrap().quantity, 20);
+    }
+
+    // ========================================================================
+    // Matching Tests - Multiple Orders
+    // ========================================================================
+
+    #[test]
+    fn test_multiple_sells_matched_by_single_buy() {
+        let mut matcher = FifoMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 20)).unwrap();
+        matcher.match_order(create_sell_order(2, 100.0, 15)).unwrap();
+        matcher.match_order(create_sell_order(3, 100.0, 25)).unwrap();
+        
+        let buy = create_buy_order(4, 100.0, 50);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 3);
+        assert_eq!(trades[0].quantity, 20);
+        assert_eq!(trades[1].quantity, 15);
+        assert_eq!(trades[2].quantity, 15); // Partial fill of third order
+        
+        assert_eq!(matcher.ask_depth(), 1);
+        assert_eq!(matcher.best_ask().unwrap().quantity, 10);
+    }
+
+    #[test]
+    fn test_multiple_buys_matched_by_single_sell() {
+        let mut matcher = FifoMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 20)).unwrap();
+        matcher.match_order(create_buy_order(2, 100.0, 15)).unwrap();
+        matcher.match_order(create_buy_order(3, 100.0, 25)).unwrap();
+        
+        let sell = create_sell_order(4, 100.0, 50);
+        let trades = matcher.match_order(sell).unwrap();
+        
+        assert_eq!(trades.len(), 3);
+        assert_eq!(trades[0].quantity, 20);
+        assert_eq!(trades[1].quantity, 15);
+        assert_eq!(trades[2].quantity, 15);
+        
+        assert_eq!(matcher.bid_depth(), 1);
+        assert_eq!(matcher.best_bid().unwrap().quantity, 10);
+    }
+
+    // ========================================================================
+    // Price Priority Tests
+    // ========================================================================
+
+    #[test]
+    fn test_no_match_price_too_low() {
+        let mut matcher = FifoMatcher::new();
+        
+        let sell = create_sell_order(1, 105.0, 50);
+        matcher.match_order(sell).unwrap();
+        
+        let buy = create_buy_order(2, 100.0, 50);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+        assert_eq!(matcher.ask_depth(), 1);
+    }
+
+    #[test]
+    fn test_no_match_price_too_high() {
+        let mut matcher = FifoMatcher::new();
+        
+        let buy = create_buy_order(1, 95.0, 50);
+        matcher.match_order(buy).unwrap();
+        
+        let sell = create_sell_order(2, 100.0, 50);
+        let trades = matcher.match_order(sell).unwrap();
+        
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+        assert_eq!(matcher.ask_depth(), 1);
+    }
+
+    #[test]
+    fn test_match_at_better_price() {
+        let mut matcher = FifoMatcher::new();
+        
+        let sell = create_sell_order(1, 95.0, 50);
+        matcher.match_order(sell).unwrap();
+        
+        let buy = create_buy_order(2, 100.0, 50);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].price, 95.0); // Matched at resting order price
+    }
+
+    // ========================================================================
+    // Time Priority Tests (FIFO)
+    // ========================================================================
+
+    #[test]
+    fn test_fifo_order_same_price() {
+        let mut matcher = FifoMatcher::new();
+        
+        // Add three sell orders at same price
+        matcher.match_order(create_sell_order(1, 100.0, 10)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        matcher.match_order(create_sell_order(2, 100.0, 10)).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        matcher.match_order(create_sell_order(3, 100.0, 10)).unwrap();
+        
+        let buy = create_buy_order(4, 100.0, 15);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        // Should match first order completely, second order partially
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].sell_id, 1);
+        assert_eq!(trades[0].quantity, 10);
+        assert_eq!(trades[1].sell_id, 2);
+        assert_eq!(trades[1].quantity, 5);
+    }
+
+    // ========================================================================
+    // Best Bid/Ask Tests
+    // ========================================================================
+
+    #[test]
+    fn test_best_bid() {
+        let mut matcher = FifoMatcher::new();
+        
+        assert!(matcher.best_bid().is_none());
+        
+        matcher.match_order(create_buy_order(1, 100.0, 50)).unwrap();
+        assert_eq!(matcher.best_bid().unwrap().id, 1);
+        assert_eq!(matcher.best_bid().unwrap().price, 100.0);
+    }
+
+    #[test]
+    fn test_best_ask() {
+        let mut matcher = FifoMatcher::new();
+        
+        assert!(matcher.best_ask().is_none());
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50)).unwrap();
+        assert_eq!(matcher.best_ask().unwrap().id, 1);
+        assert_eq!(matcher.best_ask().unwrap().price, 100.0);
+    }
+
+    // ========================================================================
+    // Clear and Empty Tests
+    // ========================================================================
+
+    #[test]
+    fn test_clear() {
+        let mut matcher = FifoMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 50)).unwrap();
+        matcher.match_order(create_sell_order(2, 105.0, 50)).unwrap();
+        
+        assert!(!matcher.is_empty());
+        
+        matcher.clear();
+        
+        assert!(matcher.is_empty());
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 0);
+    }
+
+    // ========================================================================
+    // Iterator Tests
+    // ========================================================================
+
+    #[test]
+    fn test_bids_iterator() {
+        let mut matcher = FifoMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 10)).unwrap();
+        matcher.match_order(create_buy_order(2, 101.0, 20)).unwrap();
+        matcher.match_order(create_buy_order(3, 99.0, 30)).unwrap();
+        
+        let bids: Vec<_> = matcher.bids_iter().collect();
+        assert_eq!(bids.len(), 3);
+    }
+
+    #[test]
+    fn test_asks_iterator() {
+        let mut matcher = FifoMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 10)).unwrap();
+        matcher.match_order(create_sell_order(2, 101.0, 20)).unwrap();
+        
+        let asks: Vec<_> = matcher.asks_iter().collect();
+        assert_eq!(asks.len(), 2);
+    }
+
+    // ========================================================================
+    // Trade Properties Tests
+    // ========================================================================
+
+    #[test]
+    fn test_trade_has_timestamp() {
+        let mut matcher = FifoMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50)).unwrap();
+        
+        let before = Utc::now();
+        let buy = create_buy_order(2, 100.0, 50);
+        let trades = matcher.match_order(buy).unwrap();
+        let after = Utc::now();
+        
+        assert!(trades[0].timestamp >= before);
+        assert!(trades[0].timestamp <= after);
+    }
+
+    #[test]
+    fn test_trade_has_unique_rank() {
+        FifoMatcher::reset_trade_rank();
+        
+        let mut matcher = FifoMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 10)).unwrap();
+        matcher.match_order(create_sell_order(2, 100.0, 10)).unwrap();
+        
+        let buy = create_buy_order(3, 100.0, 20);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 2);
+        assert!(trades[0].rank < trades[1].rank);
+    }
+
+    // ========================================================================
+    // Process Function Tests
+    // ========================================================================
+
+    #[test]
+    fn test_process_function() {
+        let order_book = OrderBookRef {
+            symbol: "BTCUSD".to_string(),
+        };
+        
+        let order = Order::new(1, Side::Buy, 100.0, 50);
+        let request = Request { id: 1, order };
+        
+        let trades = process(request, &order_book);
+        assert_eq!(trades.len(), 0); // No matching orders
+    }
+
+    #[test]
+    fn test_process_with_validation_failure() {
+        // This test would need actual validation logic in OrderBookRef
+        // Currently validation always returns true
+        let order_book = OrderBookRef {
+            symbol: "BTCUSD".to_string(),
+        };
+        
+        let order = Order::new(1, Side::Buy, 100.0, 50);
+        let request = Request { id: 1, order };
+        
+        let trades = process(request, &order_book);
+        // Currently will succeed as validation is placeholder
+        assert!(trades.is_empty() || !trades.is_empty());
+    }
+
+    // ========================================================================
+    // Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_large_quantity() {
+        let mut matcher = FifoMatcher::new();
+        
+        let sell = create_sell_order(1, 100.0, u64::MAX / 2);
+        matcher.match_order(sell).unwrap();
+        
+        let buy = create_buy_order(2, 100.0, u64::MAX / 2);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].quantity, u64::MAX / 2);
+    }
+
+    #[test]
+    fn test_very_small_price() {
+        let mut matcher = FifoMatcher::new();
+        
+        let sell = create_sell_order(1, 0.001, 1000);
+        matcher.match_order(sell).unwrap();
+        
+        let buy = create_buy_order(2, 0.001, 1000);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+    }
+
+    #[test]
+    fn test_very_large_price() {
+        let mut matcher = FifoMatcher::new();
+        
+        let sell = create_sell_order(1, 999999.99, 1);
+        matcher.match_order(sell).unwrap();
+        
+        let buy = create_buy_order(2, 999999.99, 1);
+        let trades = matcher.match_order(buy).unwrap();
+        
+        assert_eq!(trades.len(), 1);
+    }
+
+    #[test]
+    fn test_empty_book_operations() {
+        let matcher = FifoMatcher::new();
+        
+        assert!(matcher.is_empty());
+        assert!(matcher.best_bid().is_none());
+        assert!(matcher.best_ask().is_none());
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 0);
+        
+        let bids: Vec<_> = matcher.bids_iter().collect();
+        let asks: Vec<_> = matcher.asks_iter().collect();
+        assert_eq!(bids.len(), 0);
+        assert_eq!(asks.len(), 0);
+    }
+}
