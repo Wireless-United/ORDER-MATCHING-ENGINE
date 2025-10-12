@@ -72,7 +72,6 @@ impl Fabric {
                         "Worker {} failed to route event to shard '{}' - queue full",
                         worker_id, symbol
                     );
-                    // In a real system, you might want to implement backpressure or overflow handling
                 }
             }
         } else {
