@@ -1,4 +1,4 @@
-use crate::types::{Event, OrderIn, Side};
+use crate::types::{Event, OrderIn, Side, MatchingAlgorithm};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -6,6 +6,7 @@ use axum::{
     routing::post,
     Router,
 };
+
 use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -68,19 +69,28 @@ async fn handle_order(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Create event
-    let event = Event::new_order(side, order.price, order.qty, order.symbol.clone());
+    // Create event with specified algorithm (defaults to Hierarchical if not provided)
+    let event = Event::new_order_with_algorithm(
+        side,
+        order.price,
+        order.qty,
+        order.symbol.clone(),
+        order.algorithm,
+    );
 
     // Send to ingress channel
-    match state.ingress_sender.send(event) {
+    match state.ingress_sender.send(event.clone()) {
         Ok(_) => {
             debug!("Successfully sent {:?} order for symbol '{}'", side, order.symbol);
             Ok(Json(json!({
                 "status": "accepted",
-                "side": side,
+                "side": format!("{:?}", side),
                 "symbol": order.symbol,
                 "price": order.price,
-                "qty": order.qty
+                "qty": order.qty,
+                "order_id": event.order_id,
+                "algorithm": format!("{:?}", order.algorithm),
+                "timestamp": event.timestamp.to_rfc3339()
             })))
         }
         Err(_) => {
