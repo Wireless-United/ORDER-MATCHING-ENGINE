@@ -37,7 +37,7 @@ impl Shard {
 
         loop {
             // Wait for wake-up signal
-            if let Err(_) = self.wakeup_receiver.recv() {
+            if self.wakeup_receiver.recv().is_err() {
                 debug!("Wakeup channel closed for symbol '{}'", self.symbol);
                 break;
             }

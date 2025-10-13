@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::thread;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
-use tracing_subscriber;
+use tracing_subscriber::fmt;
 
 const QUEUE_CAPACITY: usize = 1000;
 const NUM_INGRESS_WORKERS: usize = 5;
@@ -30,8 +30,7 @@ fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreI
 
     if num_cores < required_cores {
         return Err(format!(
-            "Insufficient CPU cores! Available: {}, Required: {} (shards only)",
-            num_cores, required_cores
+            "Insufficient CPU cores! Available: {num_cores}, Required: {required_cores} (shards only)"
         ));
     }
 
@@ -43,7 +42,9 @@ fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) 
 
     // Allocate first N cores to shards only
     for (i, symbol) in symbols.iter().enumerate() {
-        shard_cores.insert(symbol.clone(), core_ids[i]);
+        if i < core_ids.len() {
+            shard_cores.insert(symbol.clone(), core_ids[i]);
+        }
     }
 
     info!("Core allocation:");
@@ -56,6 +57,7 @@ fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) 
     shard_cores
 }
 
+#[allow(dead_code)]
 fn get_current_core_id() -> Option<usize> {
     // Try to get current CPU core (Linux specific)
     std::fs::read_to_string("/proc/self/stat")
@@ -70,7 +72,7 @@ fn get_current_core_id() -> Option<usize> {
 #[tokio::main]
 async fn main() {
     // Initialize tracing
-    tracing_subscriber::fmt::init();
+    fmt::init();
 
     info!("Starting Matching Engine Service");
 
@@ -111,14 +113,14 @@ async fn main() {
         shard_wakeups.insert(symbol.clone(), wakeup_sender);
 
         // Get assigned core for this shard
-        let assigned_core = shard_cores[symbol];
+        let assigned_core = *shard_cores.get(symbol).expect("Symbol should have assigned core");
 
         // Create and spawn shard thread with core pinning and naming
         let symbol_owned = symbol.clone();
         let mut shard = Shard::new(symbol_owned.clone(), input_queue, wakeup_receiver);
         
         let handle = thread::Builder::new()
-            .name(format!("shard-{}", symbol))
+            .name(format!("shard-{symbol}"))
             .spawn(move || {
                 // Pin to assigned core
                 if !core_affinity::set_for_current(assigned_core) {
@@ -151,7 +153,7 @@ async fn main() {
         let fabric_clone = fabric.clone();
         
         let handle = thread::Builder::new()
-            .name(format!("ingress-{}", worker_id))
+            .name(format!("ingress-{worker_id}"))
             .spawn(move || {
                 info!("Ingress worker {} started (not pinned to specific core)", worker_id);
 
@@ -162,6 +164,9 @@ async fn main() {
             
         ingress_handles.push(handle);
     }
+    
+    #[allow(unused_variables)]
+    let _fabric = fabric; // Keep fabric alive for workers
 
     // Create HTTP server
     let app_state = AppState::new(ingress_sender);
@@ -182,12 +187,15 @@ async fn main() {
     }
 
     // Wait for all threads to complete (this won't happen in normal operation)
-    for handle in shard_handles {
-        let _ = handle.join();
-    }
+    #[allow(unreachable_code)]
+    {
+        for handle in shard_handles {
+            let _ = handle.join();
+        }
 
-    for handle in ingress_handles {
-        let _ = handle.join();
+        for handle in ingress_handles {
+            let _ = handle.join();
+        }
     }
 
     info!("Matching Engine Service shutting down");
