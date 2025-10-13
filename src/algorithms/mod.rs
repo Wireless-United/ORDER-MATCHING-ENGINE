@@ -14,5 +14,6 @@ pub mod hybrid;
 pub mod hierarchical;
 pub mod test;
 pub mod matcher_bridge;
+pub mod logger;
 
 //can add more algorithms here 

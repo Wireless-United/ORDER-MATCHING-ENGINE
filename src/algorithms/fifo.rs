@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::{DateTime, Utc};
 use crate::types::{EngineOrder as Order, EngineSide as Side, Request, OrderBookRef};
 use crate::algorithms::errors::AlgorithmError;
+use crate::algorithms::logger::{get_logger, OrderInfo};
 
 #[allow(dead_code)]
 static GLOBAL_TRADE_RANK: AtomicU64 = AtomicU64::new(1);
@@ -48,20 +49,53 @@ impl FifoMatcher {
         self.validate_order(&incoming)?;
 
         let mut trades = Vec::new();
+        let logger = get_logger();
+        let symbol = "UNKNOWN"; // Symbol should be passed from shard if needed
 
         match incoming.side {
             Side::Buy => {
                 self.match_buy_order(&mut incoming, &mut trades)?;
                 if !incoming.is_empty() {
+                    // Log unmatched portion
+                    logger.log_no_match(
+                        "FIFO",
+                        symbol,
+                        OrderInfo {
+                            order_id: incoming.id,
+                            side: "BUY".to_string(),
+                            price: incoming.price,
+                            quantity: incoming.quantity,
+                            timestamp: Utc::now(),
+                            reason: "Partial fill - no matching sellers at this price".to_string(),
+                        },
+                    );
                     self.add_bid(incoming);
                 }
             }
             Side::Sell => {
                 self.match_sell_order(&mut incoming, &mut trades)?;
                 if !incoming.is_empty() {
+                    // Log unmatched portion
+                    logger.log_no_match(
+                        "FIFO",
+                        symbol,
+                        OrderInfo {
+                            order_id: incoming.id,
+                            side: "SELL".to_string(),
+                            price: incoming.price,
+                            quantity: incoming.quantity,
+                            timestamp: Utc::now(),
+                            reason: "Partial fill - no matching buyers at this price".to_string(),
+                        },
+                    );
                     self.add_ask(incoming);
                 }
             }
+        }
+
+        // Log all matched trades
+        for trade in &trades {
+            logger.log_match("FIFO", symbol, trade.clone());
         }
 
         Ok(trades)

@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use crate::types::{EngineOrder as Order, EngineSide as Side, Request, OrderBookRef};
 use crate::algorithms::fifo::Trade;
+use crate::algorithms::logger::{get_logger, OrderInfo};
+use chrono::Utc;
 
 #[allow(dead_code)]
 pub struct ProRataMatcher {
@@ -21,22 +23,57 @@ impl ProRataMatcher {
             return Vec::new();
         }
 
-        match incoming.side {
+        let logger = get_logger();
+        let symbol = "UNKNOWN"; // Symbol should be passed from shard if needed
+
+        let trades = match incoming.side {
             Side::Buy => self.match_buy_order(incoming),
             Side::Sell => self.match_sell_order(incoming),
+        };
+
+        // Log all matched trades
+        for trade in &trades {
+            logger.log_match("ProRata", symbol, trade.clone());
         }
+
+        trades
     }
 
     fn match_buy_order(&mut self, mut incoming_buy: Order) -> Vec<Trade> {
         let mut trades = Vec::new();
+        let logger = get_logger();
 
         if self.asks.is_empty() {
+            logger.log_no_match(
+                "ProRata",
+                "UNKNOWN",
+                OrderInfo {
+                    order_id: incoming_buy.id,
+                    side: "BUY".to_string(),
+                    price: incoming_buy.price,
+                    quantity: incoming_buy.quantity,
+                    timestamp: Utc::now(),
+                    reason: "No sellers available".to_string(),
+                },
+            );
             self.bids.push_back(incoming_buy);
             return trades;
         }
 
         let best_ask_price = self.asks.front().unwrap().price;
         if incoming_buy.price < best_ask_price {
+            logger.log_no_match(
+                "ProRata",
+                "UNKNOWN",
+                OrderInfo {
+                    order_id: incoming_buy.id,
+                    side: "BUY".to_string(),
+                    price: incoming_buy.price,
+                    quantity: incoming_buy.quantity,
+                    timestamp: Utc::now(),
+                    reason: format!("Buy price {} below best ask {}", incoming_buy.price, best_ask_price),
+                },
+            );
             self.bids.push_back(incoming_buy);
             return trades;
         }

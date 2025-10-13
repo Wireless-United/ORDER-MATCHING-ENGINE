@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use crate::types::{EngineOrder as Order, EngineSide as Side, Request, OrderBookRef};
 use crate::algorithms::fifo::Trade;
+use crate::algorithms::logger::{get_logger, OrderInfo};
+use chrono::Utc;
 
 #[allow(dead_code)]
 pub struct HybridConfig {
@@ -49,10 +51,20 @@ impl HybridMatcher {
             return Vec::new();
         }
 
-        match incoming.side {
+        let logger = get_logger();
+        let symbol = "UNKNOWN"; // Symbol should be passed from shard if needed
+
+        let trades = match incoming.side {
             Side::Buy => self.match_buy_order(incoming),
             Side::Sell => self.match_sell_order(incoming),
+        };
+
+        // Log all matched trades
+        for trade in &trades {
+            logger.log_match("Hybrid", symbol, trade.clone());
         }
+
+        trades
     }
 
     fn match_buy_order(&mut self, mut incoming_buy: Order) -> Vec<Trade> {
