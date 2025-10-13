@@ -6,6 +6,7 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use tracing::debug;
 use tracing::info;
+use tracing::warn;
 
 pub struct Shard {
     pub symbol: String,

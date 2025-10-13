@@ -3,7 +3,7 @@
 
 # Configuration
 BASE_URL="http://localhost:3000"
-SYMBOLS=("Pranesh" "Superman" "Arnimzola")
+SYMBOLS=("Pranesh" "Superman" "Arnimzola" "Kathir")
 DEFAULT_REQUESTS=100
 DEFAULT_CONCURRENCY=10
 DEFAULT_DELAY=0.01
@@ -22,14 +22,16 @@ NC='\033[0m' # No Color
 
 # Function to generate a random symbol
 random_symbol() {
-    # Choose one of the three symbols randomly
-    local r=$((RANDOM % 3))
+    # Choose one of the four symbols randomly
+    local r=$((RANDOM % 4))
     if [ "$r" -eq 0 ]; then
         echo "Pranesh"
     elif [ "$r" -eq 1 ]; then
         echo "Superman"
-    else
+    elif [ "$r" -eq 2 ]; then
         echo "Arnimzola"
+    else
+        echo "Kathir"
     fi
 }
 

@@ -110,135 +110,132 @@ fn main() {
     info!("Configuring Tokio runtime with {} worker threads (total: {}, pinned: {})", 
           tokio_worker_threads, total_cores, symbols.len());
 
-    // Create the ingress channel for routing orders
-    let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
+    // Build Tokio runtime manually with specific worker threads
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(tokio_worker_threads)
+        .thread_name("http-worker")
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
+    
+    runtime.block_on(async {
+        // Create the ingress channel for routing orders
+        let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
 
-    // Create the egress channel for trade outputs
-    let (egress_sender, egress_receiver): (Sender<Trade>, Receiver<Trade>) = unbounded();
-    info!("Created egress channel for trade outputs");
+        // Create the egress channel for trade outputs
+        let (egress_sender, egress_receiver): (Sender<Trade>, Receiver<Trade>) = unbounded();
+        info!("Created egress channel for trade outputs");
 
-    // Initialize shard infrastructure
-    let mut shard_queues: HashMap<String, Arc<ArrayQueue<Event>>> = HashMap::new();
-    let mut shard_wakeups: HashMap<String, Sender<()>> = HashMap::new();
-    let mut shard_handles = Vec::new();
+        // Initialize shard infrastructure
+        let mut shard_queues: HashMap<String, Arc<ArrayQueue<Event>>> = HashMap::new();
+        let mut shard_wakeups: HashMap<String, Sender<()>> = HashMap::new();
+        let mut shard_handles = Vec::new();
 
-    // Create shards for each symbol
-    for symbol in &symbols {
-        info!("Initializing shard for symbol: {}", symbol);
+        // Create shards for each symbol
+        for symbol in &symbols {
+            info!("Initializing shard for symbol: {}", symbol);
 
-        // Create input queue for this shard
-        let input_queue = Arc::new(ArrayQueue::new(QUEUE_CAPACITY));
-        shard_queues.insert(symbol.clone(), input_queue.clone());
+            // Create input queue for this shard
+            let input_queue = Arc::new(ArrayQueue::new(QUEUE_CAPACITY));
+            shard_queues.insert(symbol.clone(), input_queue.clone());
 
-        // Create wakeup channel for this shard
-        let (wakeup_sender, wakeup_receiver) = unbounded();
-        shard_wakeups.insert(symbol.clone(), wakeup_sender);
+            // Create wakeup channel for this shard
+            let (wakeup_sender, wakeup_receiver) = unbounded();
+            shard_wakeups.insert(symbol.clone(), wakeup_sender);
 
-        // Get assigned core for this shard
-        let assigned_core = shard_cores[symbol];
+            // Get assigned core for this shard
+            let assigned_core = shard_cores[symbol];
 
-        // Create and spawn shard thread with core pinning and naming
-        let symbol_owned = symbol.clone();
-        let mut shard = Shard::new(symbol_owned.clone(), input_queue, wakeup_receiver);
-        
-        // Configure egress sender for this shard
-        shard.set_egress_sender(egress_sender.clone());
-        
-        let handle = thread::Builder::new()
-            .name(format!("shard-{}", symbol))
-            .spawn(move || {
-                // Pin to assigned core
-                if !core_affinity::set_for_current(assigned_core) {
-                    error!("Failed to pin shard '{}' to core {:?}", symbol_owned, assigned_core);
-                } else {
-                    info!("Shard '{}' pinned to core {:?}", symbol_owned, assigned_core);
-                }
-
-                // Log current core (verification) - Linux only
-                #[cfg(target_os = "linux")]
-                {
-                    if let Some(current_core) = get_current_core_id() {
-                        info!("Shard '{}' verified running on core {}", symbol_owned, current_core);
+            // Create and spawn shard thread with core pinning and naming
+            let symbol_owned = symbol.clone();
+            let mut shard = Shard::new(symbol_owned.clone(), input_queue, wakeup_receiver);
+            
+            // Configure egress sender for this shard
+            shard.set_egress_sender(egress_sender.clone());
+            
+            let handle = thread::Builder::new()
+                .name(format!("shard-{}", symbol))
+                .spawn(move || {
+                    // Pin to assigned core
+                    if !core_affinity::set_for_current(assigned_core) {
+                        error!("Failed to pin shard '{}' to core {:?}", symbol_owned, assigned_core);
                     } else {
-                        warn!("Could not verify core assignment for shard '{}'", symbol_owned);
+                        info!("Shard '{}' pinned to core {:?}", symbol_owned, assigned_core);
                     }
-                }
 
-                // Run the shard
-                shard.run();
-            })
-            .expect("Failed to create shard thread");
+                    // Log current core (verification) - Linux only
+                    #[cfg(target_os = "linux")]
+                    {
+                        if let Some(current_core) = get_current_core_id() {
+                            info!("Shard '{}' verified running on core {}", symbol_owned, current_core);
+                        } else {
+                            warn!("Could not verify core assignment for shard '{}'", symbol_owned);
+                        }
+                    }
+
+                    // Run the shard
+                    shard.run();
+                })
+                .expect("Failed to create shard thread");
+                
+            shard_handles.push(handle);
+        }
+
+        // Create fabric for routing
+        let fabric = Arc::new(Fabric::new(ingress_receiver, shard_queues, shard_wakeups));
+
+        // Spawn ingress worker threads WITHOUT core pinning
+        let mut ingress_handles = Vec::new();
+        for worker_id in 0..NUM_INGRESS_WORKERS {
+            let fabric_clone = fabric.clone();
             
-        shard_handles.push(handle);
-    }
+            let handle = thread::Builder::new()
+                .name(format!("ingress-{}", worker_id))
+                .spawn(move || {
+                    info!("Ingress worker {} started (not pinned to specific core)", worker_id);
 
-    // Create fabric for routing
-    let fabric = Arc::new(Fabric::new(ingress_receiver, shard_queues, shard_wakeups));
+                    // Run the ingress worker
+                    fabric_clone.run_ingress_worker(worker_id);
+                })
+                .expect("Failed to create ingress worker thread");
+                
+            ingress_handles.push(handle);
+        }
 
-    // Spawn ingress worker threads WITHOUT core pinning
-    let mut ingress_handles = Vec::new();
-    for worker_id in 0..NUM_INGRESS_WORKERS {
-        let fabric_clone = fabric.clone();
+        // Spawn egress worker threads WITHOUT core pinning
+        info!("Spawning {} egress workers", NUM_EGRESS_WORKERS);
+        let egress_handles = spawn_egress_workers(egress_receiver.clone(), NUM_EGRESS_WORKERS);
+
+        // Create HTTP server
+        let app_state = AppState::new(ingress_sender);
         
-        let handle = thread::Builder::new()
-            .name(format!("ingress-{}", worker_id))
-            .spawn(move || {
-                info!("Ingress worker {} started (not pinned to specific core)", worker_id);
+        // Configure egress receiver in AppState
+        app_state.set_egress_receiver(egress_receiver);
+        
+        let app = create_router(app_state);
 
-                // Run the ingress worker
-                fabric_clone.run_ingress_worker(worker_id);
-            })
-            .expect("Failed to create ingress worker thread");
-            
-        ingress_handles.push(handle);
-    }
-
-    // Spawn egress worker threads WITHOUT core pinning
-    info!("Spawning {} egress workers", NUM_EGRESS_WORKERS);
-    let egress_handles = spawn_egress_workers(egress_receiver.clone(), NUM_EGRESS_WORKERS);
-
-    // Create HTTP server
-    let app_state = AppState::new(ingress_sender);
-    
-    // Configure egress receiver in AppState
-    app_state.set_egress_receiver(egress_receiver);
-    
-    let app = create_router(app_state);
-
-    // Start the server
-    let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    info!("Matching Engine Service listening on http://0.0.0.0:3000");
-    info!("Available endpoints:");
-    info!("  POST /buy   - Submit buy orders");
-    info!("  POST /sell  - Submit sell orders");
-    info!("  POST /health - Health check");
-    info!("  POST /symbol - Create new symbol");
-    info!("Supported symbols: {:?}", symbols);
-    info!("Thread Summary:");
-    info!("  - {} shard threads (pinned to cores)", symbols.len());
-    info!("  - {} ingress workers (not pinned)", NUM_INGRESS_WORKERS);
-    info!("  - {} egress workers (not pinned)", NUM_EGRESS_WORKERS);
+        // Start the server
+        let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
+        info!("Matching Engine Service listening on http://0.0.0.0:3000");
+        info!("Available endpoints:");
+        info!("  POST /buy   - Submit buy orders");
+        info!("  POST /sell  - Submit sell orders");
+        info!("  POST /health - Health check");
+        info!("  POST /symbol - Create new symbol");
+        info!("Supported symbols: {:?}", symbols);
+        info!("Thread Summary:");
+        info!("  - {} shard threads (pinned to cores)", symbols.len());
+        info!("  - {} ingress workers (not pinned)", NUM_INGRESS_WORKERS);
+        info!("  - {} egress workers (not pinned)", NUM_EGRESS_WORKERS);
 
         if let Err(e) = axum::serve(listener, app).await {
             error!("Server error: {}", e);
         }
+
+        // Note: The code below is unreachable in normal operation since axum::serve runs indefinitely
+        // If the server exits, the worker threads will be terminated when the process ends
+        info!("Server stopped, worker threads will be cleaned up on process exit");
     });
-
-    // Wait for all threads to complete (this won't happen in normal operation)
-    for handle in shard_handles {
-        #[allow(unused_must_use)]
-        {
-            handle.join();
-        }
-    }
-
-    for handle in ingress_handles {
-        let _ = handle.join();
-    }
-
-    for handle in egress_handles {
-        let _ = handle.join();
-    }
 
     info!("Matching Engine Service shutting down");
 }

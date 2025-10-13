@@ -3,7 +3,7 @@
 
 # Configuration
 BASE_URL="http://localhost:3000"
-SYMBOLS=("Pranesh" "Superman" "Arnimzola","Kathir")
+SYMBOLS=("Pranesh" "Superman" "Arnimzola" "Kathir")
 DEFAULT_REQUESTS=1000
 DEFAULT_CONCURRENCY=50
 DEFAULT_DELAY=0.001
@@ -15,14 +15,16 @@ delay=${3:-$DEFAULT_DELAY}
 
 # Function to generate a random symbol
 random_symbol() {
-    # Choose one of the three symbols randomly
-    local r=$((RANDOM % 3))
+    # Choose one of the four symbols randomly
+    local r=$((RANDOM % 4))
     if [ "$r" -eq 0 ]; then
         echo "Pranesh"
     elif [ "$r" -eq 1 ]; then
         echo "Superman"
-    else
+    elif [ "$r" -eq 2 ]; then
         echo "Arnimzola"
+    else 
+        echo "Kathir"
     fi
 }
 
@@ -162,16 +164,19 @@ sell_count=$(grep -c "SUCCESS,sell" "$results_file" 2>/dev/null || echo 0)
 pranesh_count=$(grep -c "SUCCESS.*Pranesh" "$results_file" 2>/dev/null || echo 0)
 superman_count=$(grep -c "SUCCESS.*Superman" "$results_file" 2>/dev/null || echo 0)
 arnimzola_count=$(grep -c "SUCCESS.*Arnimzola" "$results_file" 2>/dev/null || echo 0)
+kathir_count=$(grep -c "SUCCESS.*Kathir" "$results_file" 2>/dev/null || echo 0)
 
 # Calculate percentages
 if [ $total_successful -gt 0 ]; then
     pranesh_pct=$((pranesh_count * 100 / total_successful))
     superman_pct=$((superman_count * 100 / total_successful))
     arnimzola_pct=$((arnimzola_count * 100 / total_successful))
+    kathir_pct=$((kathir_count * 100 / total_successful))
 else
     pranesh_pct=0
     superman_pct=0
     arnimzola_pct=0
+    kathir_pct=0
 fi
 
 # Print results
@@ -190,6 +195,7 @@ echo "Distribution by symbol:"
 echo "  Pranesh: $pranesh_count orders (${pranesh_pct}%)"
 echo "  Superman: $superman_count orders (${superman_pct}%)"
 echo "  Arnimzola: $arnimzola_count orders (${arnimzola_pct}%)"
+echo "  Kathir: $kathir_count orders (${kathir_pct}%)"
 
 # Clean up
 rm -rf "$tmp_dir"
