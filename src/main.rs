@@ -1,23 +1,12 @@
-// Suppress warnings for dead code and unused variables/imports
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
-#![allow(non_snake_case)]
-
 mod api;
 mod fabric;
 mod shard;
 mod types;
-mod algorithms;
 
-mod utils {
-    pub mod affinity;
-}
-
-use api::{create_router, spawn_egress_workers, AppState};
+use api::{create_router, AppState};
 use fabric::Fabric;
 use shard::Shard;
-use types::{Event, Trade};
+use types::Event;
 
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use crossbeam_queue::ArrayQueue;
@@ -26,11 +15,10 @@ use std::sync::Arc;
 use std::thread;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
-use tracing_subscriber::fmt;
+use tracing_subscriber;
 
 const QUEUE_CAPACITY: usize = 1000;
 const NUM_INGRESS_WORKERS: usize = 5;
-const NUM_EGRESS_WORKERS: usize = 3;
 
 fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreId>, String> {
     let core_ids = core_affinity::get_core_ids().unwrap_or_default();
@@ -42,7 +30,8 @@ fn check_cpu_requirements(symbols: &[String]) -> Result<Vec<core_affinity::CoreI
 
     if num_cores < required_cores {
         return Err(format!(
-            "Insufficient CPU cores! Available: {num_cores}, Required: {required_cores} (shards only)"
+            "Insufficient CPU cores! Available: {}, Required: {} (shards only)",
+            num_cores, required_cores
         ));
     }
 
@@ -54,9 +43,7 @@ fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) 
 
     // Allocate first N cores to shards only
     for (i, symbol) in symbols.iter().enumerate() {
-        if i < core_ids.len() {
-            shard_cores.insert(symbol.clone(), core_ids[i]);
-        }
+        shard_cores.insert(symbol.clone(), core_ids[i]);
     }
 
     info!("Core allocation:");
@@ -69,7 +56,6 @@ fn allocate_shard_cores(core_ids: &[core_affinity::CoreId], symbols: &[String]) 
     shard_cores
 }
 
-#[allow(dead_code)]
 fn get_current_core_id() -> Option<usize> {
     // Try to get current CPU core (Linux specific)
     std::fs::read_to_string("/proc/self/stat")
@@ -84,7 +70,7 @@ fn get_current_core_id() -> Option<usize> {
 #[tokio::main]
 async fn main() {
     // Initialize tracing
-    fmt::init();
+    tracing_subscriber::fmt::init();
 
     info!("Starting Matching Engine Service");
 
@@ -107,10 +93,6 @@ async fn main() {
     // Create the ingress channel for routing orders
     let (ingress_sender, ingress_receiver): (Sender<Event>, Receiver<Event>) = unbounded();
 
-    // Create the egress channel for trade outputs
-    let (egress_sender, egress_receiver): (Sender<Trade>, Receiver<Trade>) = unbounded();
-    info!("Created egress channel for trade outputs");
-
     // Initialize shard infrastructure
     let mut shard_queues: HashMap<String, Arc<ArrayQueue<Event>>> = HashMap::new();
     let mut shard_wakeups: HashMap<String, Sender<()>> = HashMap::new();
@@ -129,17 +111,14 @@ async fn main() {
         shard_wakeups.insert(symbol.clone(), wakeup_sender);
 
         // Get assigned core for this shard
-        let assigned_core = *shard_cores.get(symbol).expect("Symbol should have assigned core");
+        let assigned_core = shard_cores[symbol];
 
         // Create and spawn shard thread with core pinning and naming
         let symbol_owned = symbol.clone();
         let mut shard = Shard::new(symbol_owned.clone(), input_queue, wakeup_receiver);
         
-        // Configure egress sender for this shard
-        shard.set_egress_sender(egress_sender.clone());
-        
         let handle = thread::Builder::new()
-            .name(format!("shard-{symbol}"))
+            .name(format!("shard-{}", symbol))
             .spawn(move || {
                 // Pin to assigned core
                 if !core_affinity::set_for_current(assigned_core) {
@@ -172,7 +151,7 @@ async fn main() {
         let fabric_clone = fabric.clone();
         
         let handle = thread::Builder::new()
-            .name(format!("ingress-{worker_id}"))
+            .name(format!("ingress-{}", worker_id))
             .spawn(move || {
                 info!("Ingress worker {} started (not pinned to specific core)", worker_id);
 
@@ -183,20 +162,9 @@ async fn main() {
             
         ingress_handles.push(handle);
     }
-    
-    #[allow(unused_variables)]
-    let _fabric = fabric; // Keep fabric alive for workers
-
-    // Spawn egress worker threads WITHOUT core pinning
-    info!("Spawning {} egress workers", NUM_EGRESS_WORKERS);
-    let egress_handles = spawn_egress_workers(egress_receiver.clone(), NUM_EGRESS_WORKERS);
 
     // Create HTTP server
     let app_state = AppState::new(ingress_sender);
-    
-    // Configure egress receiver in AppState
-    app_state.set_egress_receiver(egress_receiver);
-    
     let app = create_router(app_state);
 
     // Start the server
@@ -208,28 +176,17 @@ async fn main() {
     info!("  POST /health - Health check");
     info!("  POST /symbol - Create new symbol");
     info!("Supported symbols: {:?}", symbols);
-    info!("Thread Summary:");
-    info!("  - {} shard threads (pinned to cores)", symbols.len());
-    info!("  - {} ingress workers (not pinned)", NUM_INGRESS_WORKERS);
-    info!("  - {} egress workers (not pinned)", NUM_EGRESS_WORKERS);
 
     if let Err(e) = axum::serve(listener, app).await {
         error!("Server error: {}", e);
     }
 
     // Wait for all threads to complete (this won't happen in normal operation)
-    #[allow(unreachable_code)]
-    {
-        for handle in shard_handles {
-            let _ = handle.join();
-        }
-
-        for handle in ingress_handles {
-            let _ = handle.join();
-        }
+    for handle in shard_handles {
+        let _ = handle.join();
     }
 
-    for handle in egress_handles {
+    for handle in ingress_handles {
         let _ = handle.join();
     }
 

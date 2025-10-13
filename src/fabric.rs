@@ -62,7 +62,7 @@ impl Fabric {
 
                     // Signal the shard that a new event is available
                     if let Some(wakeup_sender) = self.shard_wakeups.get(symbol) {
-                        if wakeup_sender.send(()).is_err() {
+                        if let Err(_) = wakeup_sender.send(()) {
                             error!("Failed to send wakeup signal to shard '{}'", symbol);
                         }
                     }

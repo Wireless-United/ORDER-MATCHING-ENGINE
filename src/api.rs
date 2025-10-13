@@ -187,40 +187,6 @@ async fn create_symbol(state: AppState, body: Value) -> Result<Json<Value>, Stat
     }
 }
 
-// ================================================================================================
-// EGRESS THREAD IMPLEMENTATION
-// ================================================================================================
-//
-// The egress thread system provides a mechanism to process trade outputs from the matching engine.
-// This is the reverse flow of the ingress system:
-//
-// INGRESS FLOW:  HTTP API → Ingress Channel → Fabric → Shard Queues → Shards
-// EGRESS FLOW:   Shards → Egress Channel → Egress Workers → External Systems
-//
-// USAGE IN MAIN.RS:
-// 
-// 1. Create egress channel:
-//    let (egress_sender, egress_receiver) = unbounded::<Trade>();
-//
-// 2. Pass egress_sender to each shard so they can publish trades
-//
-// 3. Configure AppState with egress receiver:
-//    let app_state = AppState::new(ingress_sender);
-//    app_state.set_egress_receiver(egress_receiver.clone());
-//
-// 4. Spawn egress workers:
-//    let egress_handles = spawn_egress_workers(egress_receiver, 3); // 3 workers
-//
-// 5. Egress workers will automatically process all trades and can:
-//    - Publish to message queues (Kafka, RabbitMQ, Redis)
-//    - Store in databases (PostgreSQL, MongoDB)
-//    - Send via WebSocket to connected clients
-//    - Update real-time analytics/metrics
-//    - Trigger notifications or alerts
-//
-// ================================================================================================
-
-/// Spawn egress worker threads to process trade outputs
 pub fn spawn_egress_workers(egress_receiver: Receiver<Trade>, num_workers: usize) -> Vec<thread::JoinHandle<()>> {
     let mut handles = Vec::new();
 
