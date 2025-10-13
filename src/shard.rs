@@ -1,16 +1,17 @@
-use crate::types::{Event, Order, Side};
-use crossbeam_channel::Receiver;
+use crate::types::{Event, Order, Trade};
+use crate::algorithms::matcher_bridge::HierarchicalMatcherBridge;
+use crossbeam_channel::{Receiver, Sender};
 use crossbeam_queue::ArrayQueue;
-use std::collections::BinaryHeap;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub struct Shard {
     pub symbol: String,
-    pub buy_orderbook: BinaryHeap<Order>,
-    pub sell_orderbook: BinaryHeap<Order>,
+    pub hierarchical_matcher: HierarchicalMatcherBridge,
     pub input_queue: Arc<ArrayQueue<Event>>,
     pub wakeup_receiver: Receiver<()>,
+    pub egress_sender: Option<Sender<Trade>>,
+    pub total_trades: usize,
 }
 
 impl Shard {
@@ -21,11 +22,17 @@ impl Shard {
     ) -> Self {
         Self {
             symbol,
-            buy_orderbook: BinaryHeap::new(),
-            sell_orderbook: BinaryHeap::new(),
+            hierarchical_matcher: HierarchicalMatcherBridge::new_with_config(0.4, 0.3, 0.3), // 40% FIFO, 30% Pro-Rata, 30% Hybrid
             input_queue,
             wakeup_receiver,
+            egress_sender: None,
+            total_trades: 0,
         }
+    }
+
+    pub fn set_egress_sender(&mut self, sender: Sender<Trade>) {
+        self.egress_sender = Some(sender);
+        info!("Egress sender configured for shard '{}'", self.symbol);
     }
 
     pub fn run(&mut self) {
@@ -48,43 +55,71 @@ impl Shard {
             }
         }
 
-        info!("Shard for symbol '{}' shutting down", self.symbol);
+        info!(
+            "Shard for symbol '{}' shutting down. Total trades: {}",
+            self.symbol, self.total_trades
+        );
     }
 
-    fn process_event(&mut self, event: Event) {
+    /// Main event processing function that handles order matching
+    pub fn process_event(&mut self, event: Event) {
         debug!(
-            "Processing event for symbol '{}': {:?}",
-            self.symbol, event
+            "Processing event for symbol '{}': Order {} {:?} {} @ {}",
+            self.symbol, event.order_id, event.side, event.qty, event.price
         );
 
-        let order = Order::new(event.price, event.qty, event.side);
+        let incoming_order = Order::from_event(&event);
 
-        match event.side {
-            Side::BUY => {
-                self.buy_orderbook.push(order);
+        // Use Hierarchical matcher (which internally runs FIFO → Pro-Rata → Hybrid sequentially)
+        debug!("Using Hierarchical matcher from algorithms/hierarchical.rs");
+        let trades = self.hierarchical_matcher.match_order(incoming_order);
+        
+        if !trades.is_empty() {
+            let phase_stats = self.hierarchical_matcher.get_phase_stats();
+            info!("Hierarchical matching complete: {}", phase_stats);
+        }
+
+        // Log trades
+        if !trades.is_empty() {
+            self.total_trades += trades.len();
+            for trade in &trades {
                 info!(
-                    "Added BUY order to '{}' orderbook: price={}, qty={}, total_buy_orders={}",
+                    "TRADE [{}]: Buy Order {} & Sell Order {} matched {} @ {} (Trade ID: {})",
                     self.symbol,
-                    event.price,
-                    event.qty,
-                    self.buy_orderbook.len()
+                    trade.buy_order_id,
+                    trade.sell_order_id,
+                    trade.qty,
+                    trade.price,
+                    trade.trade_id
                 );
+
+                // Send trade to egress channel
+                if let Some(ref egress_sender) = self.egress_sender {
+                    if let Err(e) = egress_sender.send(trade.clone()) {
+                        warn!("Failed to send trade {} to egress channel: {:?}", trade.trade_id, e);
+                    } else {
+                        debug!("Trade {} sent to egress channel", trade.trade_id);
+                    }
+                }
             }
-            Side::SELL => {
-                self.sell_orderbook.push(order);
-                info!(
-                    "Added SELL order to '{}' orderbook: price={}, qty={}, total_sell_orders={}",
-                    self.symbol,
-                    event.price,
-                    event.qty,
-                    self.sell_orderbook.len()
-                );
-            }
+        } else {
+            debug!(
+                "No trades executed for order {}. Added to orderbook.",
+                event.order_id
+            );
         }
     }
 
+    /// Get orderbook statistics
     #[allow(dead_code)]
     pub fn get_stats(&self) -> (usize, usize) {
-        (self.buy_orderbook.len(), self.sell_orderbook.len())
+        (self.hierarchical_matcher.bid_depth(), self.hierarchical_matcher.ask_depth())
+    }
+
+    /// Get orderbook state as string
+    #[allow(dead_code)]
+    pub fn get_all_stats(&self) -> String {
+        let (bids, asks) = self.get_stats();
+        format!("Hierarchical: {} bids, {} asks", bids, asks)
     }
 }
