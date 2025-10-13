@@ -1,13 +1,22 @@
 # 🚀 High-Performance Matching Engine (Rust + HPC)
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/Wireless-United/ORDER-MATCHING-ENGINE?utm_source=oss&utm_medium=github&utm_campaign=Wireless-United%2FORDER-MATCHING-ENGINE&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 This project implements an **open-source stock exchange matching engine** in **Rust**, designed with **High Performance Computing (HPC)** concepts.  
 The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fault-tolerance** — similar to real-world exchanges like **NASDAQ**.
 
 ---
 
+
+
 ## 📌 System Architecture
 
 ![Architecture Diagram](updated_workflow.png)  
+
+![Architecture Diagram](250827_10h43m41s_screenshot.png)  
+
+
+![Architecture Diagram](250827_10h43m41s_screenshot.png)  
+
 
 
 ---
@@ -71,6 +80,10 @@ The goal is to achieve **ultra-low latency**, **parallel scalability**, and **fa
 
 
 ---
+![Architecture Diagram](250827_10h44m51s_screenshot.png)  
+![Architecture Diagram](250827_10h45m47s_screenshot.png)
+
+
 
 ### 6. Remote Direct Memory Access (RDMA)
 - **What**: Allows one machine to **read/write another’s memory directly** over the network, without CPU/OS involvement.  
