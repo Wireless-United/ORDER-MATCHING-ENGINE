@@ -15,6 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use tracing::{debug, error, info};
 
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncBufReadExt, BufReader};
+use tokio::task::JoinHandle;
+
 #[derive(Clone)]
 pub struct AppState {
     pub ingress_sender: Sender<Event>,
@@ -23,28 +27,23 @@ pub struct AppState {
 }
 
 pub fn create_router(state: AppState) -> Router {
+    // Spawn FIX listener in the background to accept FIX messages over TCP
+    // FIX will be accepted on 0.0.0.0:9878 by default. We spawn a Tokio task
+    // so the existing HTTP server (if any) can still run alongside it.
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_fix_listener(state_clone, "0.0.0.0:9878").await {
+            error!("FIX listener exited with error: {}", e);
+        }
+    });
+
+    // Keep minimal HTTP endpoints for health and symbol management so callers
+    // that expect an axum Router (like main.rs) continue to work.
     Router::new()
-        .route("/buy", post(buy_handler))
-        .route("/sell", post(sell_handler))
         .route("/health", post(health_handler))
         .route("/symbol", post(create_symbol_handler))
         .with_state(state)
 }
-
-async fn buy_handler(
-    State(state): State<AppState>,
-    Json(order): Json<OrderIn>,
-) -> Result<Json<Value>, StatusCode> {
-    handle_order(state, order, Side::BUY).await
-}
-
-async fn sell_handler(
-    State(state): State<AppState>,
-    Json(order): Json<OrderIn>,
-) -> Result<Json<Value>, StatusCode> {
-    handle_order(state, order, Side::SELL).await
-}
-
 
 async fn create_symbol_handler(
     State(state): State<AppState>,
@@ -52,6 +51,10 @@ async fn create_symbol_handler(
 ) -> Result<Json<Value>, StatusCode> {
     create_symbol(state, body).await
 }
+
+// Note: Order ingress is handled by the FIX listener. The HTTP handlers were
+// removed for /buy and /sell to enforce FIX-based API usage. Symbol and
+// health APIs remain.
 
 async fn handle_order(
     state: AppState,
@@ -106,6 +109,159 @@ async fn health_handler() -> Json<Value> {
         "status": "healthy",
         "service": "matching-engine"
     }))
+}
+
+// ================================================================================================
+// FIX LISTENER
+// ================================================================================================
+
+/// Start a simple FIX TCP listener which accepts FIX messages and converts
+/// NewOrderSingle (35=D) into internal Events. This is intentionally simple
+/// and forgiving: it accepts both SOH (\x01) and pipe '|' separators and
+/// extracts the common tags used by NewOrderSingle:
+/// - 35 = MsgType (expect 'D')
+/// - 54 = Side (1=Buy, 2=Sell)
+/// - 44 = Price
+/// - 38 = OrderQty
+/// - 55 = Symbol
+async fn start_fix_listener(state: AppState, addr: &str) -> Result<(), String> {
+    info!("Starting FIX listener on {}", addr);
+
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind FIX listener: {}", e))?;
+
+    loop {
+        let (socket, peer) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("Failed to accept connection: {}", e))?;
+
+        info!("Accepted FIX connection from {}", peer);
+        let state_conn = state.clone();
+
+        // Spawn a task per connection
+        tokio::spawn(async move {
+            if let Err(e) = handle_fix_connection(state_conn, socket).await {
+                error!("Error in FIX connection handler: {}", e);
+            }
+        });
+    }
+}
+
+async fn handle_fix_connection(state: AppState, socket: tokio::net::TcpStream) -> Result<(), String> {
+    let mut reader = BufReader::new(socket);
+    let mut buf = Vec::new();
+
+    loop {
+        buf.clear();
+        // Read until newline or until EOF; FIX messages often don't include newlines,
+        // but many clients send messages followed by a newline; we accept both.
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => {
+                // Connection closed
+                info!("FIX connection closed by peer");
+                return Ok(());
+            }
+            Ok(_) => {
+                let raw = String::from_utf8_lossy(&buf).to_string();
+                // Try to parse possibly multiple FIX messages in the buffer
+                for msg in split_fix_messages(&raw) {
+                    if let Some(event) = parse_fix_message(&msg) {
+                        // Send to ingress channel
+                        if let Err(e) = state.ingress_sender.send(event.clone()) {
+                            error!("Failed to send FIX-derived event: {:?}", e);
+                        } else {
+                            info!("Accepted FIX order: {:?}", event);
+                        }
+                    } else {
+                        debug!("Ignored non-order or unparsable FIX msg: {}", msg);
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(format!("Failed to read from FIX socket: {}", e));
+            }
+        }
+    }
+}
+
+/// Split a raw buffer into candidate FIX messages. Accepts either SOH (\x01)
+/// separated messages or '|' separated messages. This helper returns message
+/// strings with internal separators kept as '|' for simpler parsing.
+fn split_fix_messages(raw: &str) -> Vec<String> {
+    // Normalize: replace SOH with '|' then split on double-10 (end of checksum is often tag 10)
+    let normalized = raw.replace('\x01', "|");
+    // Some FIX senders include trailing newline; split by newline first
+    let mut parts = Vec::new();
+    for line in normalized.lines() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        // There can be multiple messages in a single line separated by '|' and ending with tag 10
+        // We'll treat each substring that contains an 8= (BeginString) and 10= as a message
+        if candidate.contains("8=") && candidate.contains("10=") {
+            parts.push(candidate.to_string());
+        } else {
+            // If it's not a full FIX message, still push it so parser can try
+            parts.push(candidate.to_string());
+        }
+    }
+
+    parts
+}
+
+/// Parse a single FIX message (with '|' separators) and return an Event if it's
+/// a NewOrderSingle (35=D) with required fields.
+fn parse_fix_message(msg: &str) -> Option<Event> {
+    // Build a map of tags
+    let mut tags = std::collections::HashMap::new();
+    for kv in msg.split('|') {
+        if kv.is_empty() {
+            continue;
+        }
+        if let Some(pos) = kv.find('=') {
+            let (k, v) = kv.split_at(pos);
+            let v = &v[1..];
+            tags.insert(k.to_string(), v.to_string());
+        }
+    }
+
+    // MsgType
+    let msg_type = tags.get("35")?.as_str();
+    if msg_type != "D" {
+        // Not a NewOrderSingle
+        return None;
+    }
+
+    // Required fields: 54 (Side), 44 (Price), 38 (OrderQty), 55 (Symbol)
+    let side_tag = tags.get("54")?;
+    let price_tag = tags.get("44")?;
+    let qty_tag = tags.get("38")?;
+    let symbol_tag = tags.get("55")?;
+
+    let side = match side_tag.as_str() {
+        "1" => Side::BUY,
+        "2" => Side::SELL,
+        _ => return None,
+    };
+
+    // Price may be decimal; we'll parse as f64 then convert to u64 by rounding.
+    let price = match price_tag.parse::<f64>() {
+        Ok(p) => p.round() as u64,
+        Err(_) => return None,
+    };
+
+    let qty = match qty_tag.parse::<u64>() {
+        Ok(q) => q,
+        Err(_) => return None,
+    };
+
+    let symbol = symbol_tag.clone();
+
+    let event = Event::new_order_with_algorithm(side, price, qty, symbol, crate::types::MatchingAlgorithm::default());
+    Some(event)
 }
 
 fn is_valid_symbol(valid_symbols: &Arc<Mutex<HashSet<String>>>, symbol: &str) -> bool {
