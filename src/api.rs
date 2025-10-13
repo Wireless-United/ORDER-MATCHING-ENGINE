@@ -418,6 +418,7 @@ fn run_egress_worker(receiver: Receiver<Trade>, worker_id: usize) {
     info!("Egress worker {} shutting down", worker_id);
 }
 
+///Egress thread implementation is done using crossbeam channels for efficiency
 /// Process individual trade - can be extended for publishing to external systems
 fn process_trade_output(trade: Trade, worker_id: usize) {
     info!(
