@@ -299,3 +299,391 @@ pub fn process(request: Request, _order_book: &OrderBookRef) -> Vec<Trade> {
     // Process the order
     matcher.match_order(request.order)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn create_buy_order(id: u64, price: f64, quantity: u64) -> Order {
+        Order::new(id, Side::Buy, price, quantity)
+    }
+
+    fn create_sell_order(id: u64, price: f64, quantity: u64) -> Order {
+        Order::new(id, Side::Sell, price, quantity)
+    }
+
+    // ========================================================================
+    // Basic Functionality Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pro_rata_matcher_creation() {
+        let matcher = ProRataMatcher::new();
+        assert!(matcher.is_empty());
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 0);
+    }
+
+    #[test]
+    fn test_add_single_bid() {
+        let mut matcher = ProRataMatcher::new();
+        let order = create_buy_order(1, 100.0, 50);
+        
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+    }
+
+    #[test]
+    fn test_add_single_ask() {
+        let mut matcher = ProRataMatcher::new();
+        let order = create_sell_order(1, 100.0, 50);
+        
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.ask_depth(), 1);
+    }
+
+    // ========================================================================
+    // Validation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_reject_zero_quantity() {
+        let mut matcher = ProRataMatcher::new();
+        let order = create_buy_order(1, 100.0, 0);
+        
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0);
+    }
+
+    #[test]
+    fn test_reject_zero_price() {
+        let mut matcher = ProRataMatcher::new();
+        let order = create_buy_order(1, 0.0, 50);
+        
+        let trades = matcher.match_order(order);
+        assert_eq!(trades.len(), 0);
+    }
+
+    // ========================================================================
+    // Pro-Rata Allocation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pro_rata_equal_distribution() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Add three equal sell orders at same price
+        matcher.match_order(create_sell_order(1, 100.0, 30));
+        matcher.match_order(create_sell_order(2, 100.0, 30));
+        matcher.match_order(create_sell_order(3, 100.0, 30));
+        
+        // Buy order that matches all three
+        let buy = create_buy_order(4, 100.0, 90);
+        let trades = matcher.match_order(buy);
+        
+        // Should distribute equally: 30 each
+        assert_eq!(trades.len(), 3);
+        assert_eq!(trades[0].quantity, 30);
+        assert_eq!(trades[1].quantity, 30);
+        assert_eq!(trades[2].quantity, 30);
+        assert!(matcher.is_empty());
+    }
+
+    #[test]
+    fn test_pro_rata_proportional_distribution() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Add sell orders with different sizes at same price
+        matcher.match_order(create_sell_order(1, 100.0, 50)); // 50%
+        matcher.match_order(create_sell_order(2, 100.0, 30)); // 30%
+        matcher.match_order(create_sell_order(3, 100.0, 20)); // 20%
+        // Total: 100
+        
+        let buy = create_buy_order(4, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 3);
+        // Check proportional allocation (50%, 30%, 20%)
+        assert_eq!(trades[0].quantity, 50);
+        assert_eq!(trades[1].quantity, 30);
+        assert_eq!(trades[2].quantity, 20);
+    }
+
+    #[test]
+    fn test_pro_rata_with_remainder() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Add three equal orders
+        matcher.match_order(create_sell_order(1, 100.0, 10));
+        matcher.match_order(create_sell_order(2, 100.0, 10));
+        matcher.match_order(create_sell_order(3, 100.0, 10));
+        
+        // Buy order that doesn't divide evenly (25 / 3 = 8.33...)
+        let buy = create_buy_order(4, 100.0, 25);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 3);
+        // Floor allocation: 8 each = 24, remainder 1 goes to first
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 25);
+    }
+
+    #[test]
+    fn test_pro_rata_partial_fill() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Large resting orders
+        matcher.match_order(create_sell_order(1, 100.0, 100));
+        matcher.match_order(create_sell_order(2, 100.0, 100));
+        
+        // Small incoming order
+        let buy = create_buy_order(3, 100.0, 50);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].quantity, 25);
+        assert_eq!(trades[1].quantity, 25);
+        
+        // Remaining orders should still be in book
+        assert_eq!(matcher.ask_depth(), 2);
+    }
+
+    // ========================================================================
+    // Buy Side Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pro_rata_buy_side() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Add buy orders
+        matcher.match_order(create_buy_order(1, 100.0, 50));
+        matcher.match_order(create_buy_order(2, 100.0, 30));
+        matcher.match_order(create_buy_order(3, 100.0, 20));
+        
+        let sell = create_sell_order(4, 100.0, 100);
+        let trades = matcher.match_order(sell);
+        
+        assert_eq!(trades.len(), 3);
+        assert_eq!(trades[0].quantity, 50);
+        assert_eq!(trades[1].quantity, 30);
+        assert_eq!(trades[2].quantity, 20);
+    }
+
+    // ========================================================================
+    // Price Priority Tests
+    // ========================================================================
+
+    #[test]
+    fn test_no_match_price_too_low() {
+        let mut matcher = ProRataMatcher::new();
+        
+        let sell = create_sell_order(1, 105.0, 50);
+        matcher.match_order(sell);
+        
+        let buy = create_buy_order(2, 100.0, 50);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+        assert_eq!(matcher.ask_depth(), 1);
+    }
+
+    #[test]
+    fn test_match_only_at_best_price() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Add orders at different prices
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 101.0, 50));
+        matcher.match_order(create_sell_order(3, 102.0, 50));
+        
+        let buy = create_buy_order(4, 105.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        // Should only match at best price (100.0)
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].price, 100.0);
+        assert_eq!(trades[0].quantity, 50);
+    }
+
+    // ========================================================================
+    // Edge Cases
+    // ========================================================================
+
+    #[test]
+    fn test_single_resting_order_pro_rata() {
+        let mut matcher = ProRataMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        
+        let buy = create_buy_order(2, 100.0, 30);
+        let trades = matcher.match_order(buy);
+        
+        // With single order, behaves like FIFO
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].quantity, 30);
+        assert_eq!(matcher.ask_depth(), 1);
+    }
+
+    #[test]
+    fn test_exact_match_multiple_orders() {
+        let mut matcher = ProRataMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 40));
+        matcher.match_order(create_sell_order(2, 100.0, 60));
+        
+        let buy = create_buy_order(3, 100.0, 100);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].quantity, 40);
+        assert_eq!(trades[1].quantity, 60);
+        assert!(matcher.is_empty());
+    }
+
+    #[test]
+    fn test_empty_book() {
+        let mut matcher = ProRataMatcher::new();
+        
+        let buy = create_buy_order(1, 100.0, 50);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 0);
+        assert_eq!(matcher.bid_depth(), 1);
+    }
+
+    // ========================================================================
+    // Best Bid/Ask Tests
+    // ========================================================================
+
+    #[test]
+    fn test_best_bid() {
+        let mut matcher = ProRataMatcher::new();
+        
+        assert!(matcher.best_bid().is_none());
+        
+        matcher.match_order(create_buy_order(1, 100.0, 50));
+        assert_eq!(matcher.best_bid().unwrap().id, 1);
+    }
+
+    #[test]
+    fn test_best_ask() {
+        let mut matcher = ProRataMatcher::new();
+        
+        assert!(matcher.best_ask().is_none());
+        
+        matcher.match_order(create_sell_order(1, 100.0, 50));
+        assert_eq!(matcher.best_ask().unwrap().id, 1);
+    }
+
+    // ========================================================================
+    // Iterator Tests
+    // ========================================================================
+
+    #[test]
+    fn test_bids_iterator() {
+        let mut matcher = ProRataMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 10));
+        matcher.match_order(create_buy_order(2, 101.0, 20));
+        
+        let bids: Vec<_> = matcher.bids_iter().collect();
+        assert_eq!(bids.len(), 2);
+    }
+
+    #[test]
+    fn test_asks_iterator() {
+        let mut matcher = ProRataMatcher::new();
+        
+        matcher.match_order(create_sell_order(1, 100.0, 10));
+        matcher.match_order(create_sell_order(2, 101.0, 20));
+        
+        let asks: Vec<_> = matcher.asks_iter().collect();
+        assert_eq!(asks.len(), 2);
+    }
+
+    // ========================================================================
+    // Clear Tests
+    // ========================================================================
+
+    #[test]
+    fn test_clear() {
+        let mut matcher = ProRataMatcher::new();
+        
+        matcher.match_order(create_buy_order(1, 100.0, 50));
+        matcher.match_order(create_sell_order(2, 105.0, 50));
+        
+        matcher.clear();
+        
+        assert!(matcher.is_empty());
+        assert_eq!(matcher.bid_depth(), 0);
+        assert_eq!(matcher.ask_depth(), 0);
+    }
+
+    // ========================================================================
+    // Process Function Tests
+    // ========================================================================
+
+    #[test]
+    fn test_process_function() {
+        let order_book = OrderBookRef {
+            symbol: "BTCUSD".to_string(),
+        };
+        
+        let order = Order::new(1, Side::Buy, 100.0, 50);
+        let request = Request { id: 1, order };
+        
+        let trades = process(request, &order_book);
+        assert_eq!(trades.len(), 0);
+    }
+
+    // ========================================================================
+    // Complex Allocation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_pro_rata_small_incoming_large_resting() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Large resting orders at same price
+        matcher.match_order(create_sell_order(1, 100.0, 1000));
+        matcher.match_order(create_sell_order(2, 100.0, 2000));
+        matcher.match_order(create_sell_order(3, 100.0, 3000));
+        
+        // Small incoming order
+        let buy = create_buy_order(4, 100.0, 60);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 3);
+        let total: u64 = trades.iter().map(|t| t.quantity).sum();
+        assert_eq!(total, 60);
+        
+        // Check approximate proportions (1:2:3 ratio)
+        // With rounding, should be roughly 10, 20, 30
+        assert!(trades[0].quantity <= 11);
+        assert!(trades[1].quantity <= 21);
+        assert!(trades[2].quantity >= 28);
+    }
+
+    #[test]
+    fn test_pro_rata_all_remainder_distribution() {
+        let mut matcher = ProRataMatcher::new();
+        
+        // Orders that will cause maximum remainder
+        matcher.match_order(create_sell_order(1, 100.0, 1));
+        matcher.match_order(create_sell_order(2, 100.0, 1));
+        matcher.match_order(create_sell_order(3, 100.0, 1));
+        
+        let buy = create_buy_order(4, 100.0, 3);
+        let trades = matcher.match_order(buy);
+        
+        assert_eq!(trades.len(), 3);
+        assert_eq!(trades[0].quantity, 1);
+        assert_eq!(trades[1].quantity, 1);
+        assert_eq!(trades[2].quantity, 1);
+    }
+}
